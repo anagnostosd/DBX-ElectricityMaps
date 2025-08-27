@@ -22,12 +22,12 @@ zone = "GR" # We will focus on Greece due to account limitations
 data_sources = {
     "power_data": {
         "url": f"{base_url}/power-breakdown/history?zone={zone}",
-        "path": "/electricity_maps/bronze/power_data",
+        "path": "/dbfs/bronze",
         "table_name": "power_data_bronze"
     },
     "carbon_intensity": {
         "url": f"{base_url}/carbon-intensity/history?zone={zone}",
-        "path": "/electricity_maps/bronze/carbon_data",
+        "path": "/dbfs/bronze",
         "table_name": "carbon_data_bronze"
     }
 }
