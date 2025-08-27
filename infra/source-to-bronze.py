@@ -1,5 +1,6 @@
 import requests
 import json
+import datetime
 from pyspark.sql.functions import current_timestamp
 from pyspark.sql.types import StructType, StringType, ArrayType, MapType, LongType, IntegerType, DoubleType, BooleanType
 
@@ -22,13 +23,13 @@ zone = "GR" # We will focus on Greece due to account limitations
 data_sources = {
     "power_data": {
         "url": f"{base_url}/power-breakdown/history?zone={zone}",
-        "path": "/bronze/power_data_bronze",
-        "table_name": "bronze.power_data_bronze"
+        "path": "/tmp/bronze/power_data",
+        "table_name": "bronze.power_data"
     },
     "carbon_intensity": {
         "url": f"{base_url}/carbon-intensity/history?zone={zone}",
-        "path": "/bronze/carbon_data_bronze",
-        "table_name": "bronze.carbon_data_bronze"
+        "path": "/tmp/bronze/carbon_data",
+        "table_name": "bronze.carbon_data"
     }
 }
 
@@ -53,19 +54,19 @@ def fetch_and_write_data(source_name, url, path, table_name):
         # We need to wrap the JSON in a format Spark can easily write
         # We will store the full raw JSON string along with a timestamp and source
         df = spark.createDataFrame(
-            [(source_name, json.dumps(data), current_timestamp())],
+            [(source_name, json.dumps(data), datetime.datetime.now())],
             ['source', 'raw_json', 'ingested_at']
         )
-        
+        print(df)
         # Write the data to a Delta table, creating it if it doesn't exist.
         # This will be our bronze layer.
-        df.write.format("delta").mode("append").save(path)
+        df.write.format("delta").mode("append").saveAsTable(table_name)
         
-        print(f"Successfully wrote data to Delta table at '{path}'")
+        print(f"Successfully wrote data to Delta table")
         
         # Create a metastore table for easy querying
-        spark.sql(f"CREATE TABLE IF NOT EXISTS {table_name} USING DELTA LOCATION '{path}'")
-        print(f"Successfully created or updated table '{table_name}'")
+        #spark.sql(f"CREATE TABLE IF NOT EXISTS {table_name} USING DELTA LOCATION '{path}'")
+        #print(f"Successfully created or updated table '{table_name}'")
         
     except requests.exceptions.RequestException as e:
         print(f"Error fetching data from {url}: {e}")
