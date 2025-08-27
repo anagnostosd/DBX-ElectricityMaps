@@ -15,7 +15,7 @@ except Exception as e:
 
 # Define the base API URL and headers
 base_url = "https://api.electricitymaps.com/v3"
-headers = {"auth-token": api_token}
+headers = {"auth-token": f"{api_token}"}
 zone = "GR" # We will focus on Greece due to account limitations
 
 # Define the data sources and corresponding Delta table paths
