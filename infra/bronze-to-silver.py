@@ -131,18 +131,62 @@ carbon_df_flattened = (
 # 5. Deduplicate the flattened data to ensure we have the most recent version
 window_spec = Window.partitionBy("zone", "datetime").orderBy(col("ingested_at").desc())
 
-power_df_deduped = power_df_flattened.withColumn("row_num", row_number().over(window_spec)) \
-    .filter(col("row_num") == 1) \
+power_df_deduped = (
+    power_df_flattened
+    .withColumn("row_num", row_number().over(window_spec))
+    .filter(col("row_num") == 1)
     .drop("row_num")
+    .withColumnRenamed("ingested_at", "power_ingested_at")
+)
 
-carbon_df_deduped = carbon_df_flattened.withColumn("row_num", row_number().over(window_spec)) \
-    .filter(col("row_num") == 1) \
+carbon_df_deduped = (
+    carbon_df_flattened
+    .withColumn("row_num", row_number().over(window_spec))
+    .filter(col("row_num") == 1)
     .drop("row_num")
+    .withColumnRenamed("ingested_at", "carbon_ingested_at")
+)
 
 # 6. Join the two dataframes on datetime and zone
-silver_df = power_df_deduped.join(carbon_df_deduped, on=["zone", "datetime"], how="inner") \
-    .drop(carbon_df_deduped.ingested_at) \
-    .drop(power_df_deduped.updatedAt)
+silver_df = power_df_deduped.join(carbon_df_deduped, on=["zone", "datetime"], how="inner")
+
+silver_df = silver_df.select(
+    col("zone"),
+    col("datetime"),
+    col("power_ingested_at").alias("ingested_at"),
+    col("isEstimated"),
+    col("consumption_nuclear"),
+    col("consumption_geothermal"),
+    col("consumption_biomass"),
+    col("consumption_coal"),
+    col("consumption_wind"),
+    col("consumption_solar"),
+    col("consumption_hydro"),
+    col("consumption_gas"),
+    col("consumption_oil"),
+    col("consumption_total"),
+    col("production_nuclear"),
+    col("production_geothermal"),
+    col("production_biomass"),
+    col("production_coal"),
+    col("production_wind"),
+    col("production_solar"),
+    col("production_hydro"),
+    col("production_gas"),
+    col("production_oil"),
+    col("production_total"),
+    col("import_total"),
+    col("export_total"),
+    col("import_AL"),
+    col("import_BG"),
+    col("import_MK"),
+    col("import_TR"),
+    col("export_AL"),
+    col("export_BG"),
+    col("export_MK"),
+    col("export_TR"),
+    col("carbon_intensity")
+)
 
 # 7. Perform a MERGE to incrementally update the silver table
 # This is the key to an efficient, idempotent pipeline
@@ -150,7 +194,7 @@ spark.sql("CREATE SCHEMA IF NOT EXISTS silver")
 silver_table_path = "silver.energy_data"
 
 # Check if the silver table already exists
-if not spark.catalog._jcatalog.tableExists(silver_table_path):
+if not spark.catalog.tableExists(silver_table_path):
     # If the table doesn't exist, create it with a simple write
     print("Silver table does not exist. Creating it...")
     silver_df.write.format("delta").mode("overwrite").saveAsTable(silver_table_path)
