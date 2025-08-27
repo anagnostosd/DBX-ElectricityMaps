@@ -54,9 +54,6 @@ def parse_and_flatten_csv(row):
     csv_data = StringIO(raw_csv)
     df = pd.read_csv(csv_data, skiprows=1)
     
-    # Drop the first column as it's just the date
-    df = df.iloc[:, 1:]
-    
     # Rename columns to match the defined schema
     df.columns = ["name", "latitude", "longitude", "datetime", "temp", "humidity", "precip", "windspeed", "winddir", "cloudcover", "solarenergy", "stations"]
     
