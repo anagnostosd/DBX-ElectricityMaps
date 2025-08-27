@@ -3,20 +3,29 @@ from pyspark.sql.window import Window
 from delta.tables import DeltaTable
 import pyspark.sql.functions as F
 
-# 1. Read data from the silver layer
-silver_df = spark.read.format("delta").table("silver.energy_data")
+# 1. Get the lookback interval from a notebook widget. Default to 48 hours.
+try:
+    lookback_hours = int(dbutils.widgets.get("lookback_hours"))
+except:
+    lookback_hours = 48
+    print(f"No lookback_hours parameter provided, defaulting to {lookback_hours} hours.")
 
-# 2. Handle potential missing values by filling with a reasonable default
+# 2. Read data from the silver layer, focusing on the most recent data
+# We'll read data where the datetime is within the specified lookback period
+silver_df = spark.read.format("delta").table("silver.energy_data") \
+    .filter(f"datetime >= now() - interval {lookback_hours} hours")
+
+# 3. Handle potential missing values by filling with a reasonable default
 # In this case, we'll fill nulls with 0. In a real-world scenario, you might use
 # more advanced imputation techniques.
 silver_df = silver_df.fillna(0)
 
-# 3. Create time-based features
+# 4. Create time-based features
 gold_df = silver_df.withColumn("hour", hour("datetime")) \
                  .withColumn("day_of_week", dayofweek("datetime")) \
                  .withColumn("month", month("datetime"))
 
-# 4. Create time-series features (lagged values and rolling averages)
+# 5. Create time-series features (lagged values and rolling averages)
 # We need to use a window function to perform these calculations correctly
 window_spec = Window.partitionBy("zone").orderBy("datetime")
 
@@ -38,10 +47,10 @@ for column in lag_columns:
     gold_df = gold_df.withColumn(f"lag_{column}_1h", lag(col(column), 1).over(window_spec))
     gold_df = gold_df.withColumn(f"rolling_avg_{column}_24h", avg(col(column)).over(window_spec.rowsBetween(-23, 0)))
 
-# 5. Handle nulls created by the window functions (at the start of the time series)
+# 6. Handle nulls created by the window functions (at the start of the time series)
 gold_df = gold_df.fillna(0)
 
-# 6. Write the final DataFrame to the gold layer using an efficient merge strategy
+# 7. Write the final DataFrame to the gold layer using an efficient merge strategy
 spark.sql("CREATE SCHEMA IF NOT EXISTS gold")
 gold_table_name = "gold.ml_features"
 
