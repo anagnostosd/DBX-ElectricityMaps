@@ -22,13 +22,13 @@ zone = "GR" # We will focus on Greece due to account limitations
 data_sources = {
     "power_data": {
         "url": f"{base_url}/power-breakdown/history?zone={zone}",
-        "path": "/dbfs/bronze",
-        "table_name": "power_data_bronze"
+        "path": "/bronze/power_data_bronze",
+        "table_name": "bronze.power_data_bronze"
     },
     "carbon_intensity": {
         "url": f"{base_url}/carbon-intensity/history?zone={zone}",
-        "path": "/dbfs/bronze",
-        "table_name": "carbon_data_bronze"
+        "path": "/bronze/carbon_data_bronze",
+        "table_name": "bronze.carbon_data_bronze"
     }
 }
 
@@ -40,6 +40,9 @@ def fetch_and_write_data(source_name, url, path, table_name):
     """
     print(f"Fetching data from {url}...")
     try:
+        # Ensure the bronze schema exists
+        spark.sql("CREATE SCHEMA IF NOT EXISTS bronze")
+
         response = requests.get(url, headers=headers)
         response.raise_for_status() # Raise an exception for bad status codes
         
