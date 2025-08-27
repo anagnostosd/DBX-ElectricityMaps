@@ -1,4 +1,4 @@
-from pyspark.sql.functions import col, hour, dayofweek, month, lag, avg, window, lit, to_timestamp, to_utc_timestamp
+from pyspark.sql.functions import col, hour, dayofweek, month, lag, avg, window, lit, to_timestamp, to_utc_timestamp, row_number
 from pyspark.sql.window import Window
 from delta.tables import DeltaTable
 import pyspark.sql.functions as F
@@ -18,11 +18,16 @@ silver_energy_df = spark.read.format("delta").table("silver.energy_data") \
 silver_weather_df = spark.read.format("delta").table("silver.weather_forecast_data") \
     .filter(f"datetime >= now() - interval {lookback_hours} hours")
 
-# 3. Pivot the weather data from long to wide format
-# We need to handle potential nulls for locations that might not have data for every timestamp.
+# 3. Deduplicate the weather data, keeping only the latest forecast
+window_spec_weather = Window.partitionBy("name", "datetime").orderBy(col("ingested_at").desc())
+silver_weather_deduped_df = silver_weather_df.withColumn("row_num", row_number().over(window_spec_weather)) \
+    .filter(col("row_num") == 1) \
+    .drop("row_num")
+
+# 4. Pivot the weather data from long to wide format
 # Let's select the weather columns we want to pivot
 weather_cols = ["temp", "humidity", "precip", "windspeed", "solarenergy", "winddir"]
-pivot_df = silver_weather_df.groupBy("datetime").pivot("name").agg(*[F.first(col).alias(col) for col in weather_cols])
+pivot_df = silver_weather_deduped_df.groupBy("datetime").pivot("name").agg(*[F.first(col).alias(col) for col in weather_cols])
 
 # Rename the pivoted columns for clarity
 pivoted_weather_df = pivot_df.select(
@@ -47,20 +52,20 @@ pivoted_weather_df = pivot_df.select(
     col("Thessaloniki, Greece_winddir").alias("winddir_thessaloniki")
 )
 
-# 4. Join the energy and pivoted weather dataframes
+# 5. Join the energy and pivoted weather dataframes
 gold_df = silver_energy_df.join(pivoted_weather_df, on=["datetime"], how="left_outer")
 
-# 5. Handle potential missing values by filling with a reasonable default
+# 6. Handle potential missing values by filling with a reasonable default
 # In this case, we'll fill nulls with 0. In a real-world scenario, you might use
 # more advanced imputation techniques.
 gold_df = gold_df.fillna(0)
 
-# 6. Create time-based features
+# 7. Create time-based features
 gold_df = gold_df.withColumn("hour", hour("datetime")) \
                  .withColumn("day_of_week", dayofweek("datetime")) \
                  .withColumn("month", month("datetime"))
 
-# 7. Create time-series features (lagged values and rolling averages)
+# 8. Create time-series features (lagged values and rolling averages)
 # We need to use a window function to perform these calculations correctly
 window_spec = Window.partitionBy("zone").orderBy("datetime")
 
@@ -85,10 +90,10 @@ for column in lag_columns:
     gold_df = gold_df.withColumn(f"lag_{column}_1h", lag(col(column), 1).over(window_spec))
     gold_df = gold_df.withColumn(f"rolling_avg_{column}_24h", avg(col(column)).over(window_spec.rowsBetween(-23, 0)))
 
-# 8. Handle nulls created by the window functions (at the start of the time series)
+# 9. Handle nulls created by the window functions (at the start of the time series)
 gold_df = gold_df.fillna(0)
 
-# 9. Write the final DataFrame to the gold layer using an efficient merge strategy
+# 10. Write the final DataFrame to the gold layer using an efficient merge strategy
 spark.sql("CREATE SCHEMA IF NOT EXISTS gold")
 gold_table_name = "gold.ml_features"
 
