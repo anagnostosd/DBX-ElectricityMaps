@@ -6,31 +6,28 @@ from pyspark.sql.types import StructType, StringType, ArrayType, MapType, LongTy
 # 1. Retrieve the API token from the secret scope
 # IMPORTANT: This notebook assumes you have already created a secret scope
 # and added your API token to it using the Databricks CLI.
-# Command to create the scope: databricks secrets create-scope --scope mlcourse
-# Command to add the secret: databricks secrets put --scope mlcourse --key electricitymaps-token
+# Command to create the scope: databricks secrets create-scope APIs
+# Command to add the secret: databricks secrets put-secret APIs electricitymaps-token
 try:
-    api_token = dbutils.secrets.get(scope="mlcourse", key="electricitymaps-token")
+    api_token = dbutils.secrets.get(scope="APIs", key="electricitymaps-token")
 except Exception as e:
     print(f"Failed to get secret: {e}")
-    # In a production environment, you should not hardcode a token.
-    # For a learning project, you can provide a dummy token to test the rest of the code.
-    api_token = "dummy-token"  
 
 # Define the base API URL and headers
 base_url = "https://api.electricitymaps.com/v3"
 headers = {"auth-token": api_token}
-zone = "GR" # As per the prompt, we will focus on Greece due to account limitations
+zone = "GR" # We will focus on Greece due to account limitations
 
 # Define the data sources and corresponding Delta table paths
 data_sources = {
     "power_data": {
         "url": f"{base_url}/power-breakdown/history?zone={zone}",
-        "path": "/mlcourse_project/bronze/power_data",
+        "path": "/electricity_maps/bronze/power_data",
         "table_name": "power_data_bronze"
     },
     "carbon_intensity": {
         "url": f"{base_url}/carbon-intensity/history?zone={zone}",
-        "path": "/mlcourse_project/bronze/carbon_data",
+        "path": "/electricity_maps/bronze/carbon_data",
         "table_name": "carbon_data_bronze"
     }
 }
@@ -76,6 +73,3 @@ def fetch_and_write_data(source_name, url, path, table_name):
 for source_name, details in data_sources.items():
     fetch_and_write_data(source_name, details["url"], details["path"], details["table_name"])
 
-# 4. To handle duplicates, we need to add a run_id or a unique identifier to each run
-# The `ingested_at` timestamp will work for now, but a more robust solution would be a unique UUID
-# for each ingestion run. We will handle the deduplication in the next step (silver layer).
