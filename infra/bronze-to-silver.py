@@ -1,67 +1,69 @@
 from pyspark.sql.functions import from_json, col, current_timestamp, row_number, to_timestamp, lit
 from pyspark.sql.window import Window
-from pyspark.sql.types import StructType, StringType, ArrayType, MapType, LongType, IntegerType, DoubleType, BooleanType
+from pyspark.sql.types import StructType, StringType, ArrayType, MapType, LongType, IntegerType, DoubleType, BooleanType, StructField
 from delta.tables import DeltaTable
-from pyspark.sql.functions import from_json, col, current_timestamp, row_number, to_timestamp, lit
-from pyspark.sql.window import Window
-from pyspark.sql.types import StructType, StringType, ArrayType, MapType, LongType, IntegerType, DoubleType, BooleanType
 
-# 1. Read the raw data from the bronze layer, focusing on the most recent data
-# We'll read the last 48 hours of ingested data to ensure we capture all recent changes.
+# 1. Get the lookback interval from a notebook widget. Default to 48 hours.
+try:
+    lookback_hours = int(dbutils.widgets.get("lookback_hours"))
+except:
+    lookback_hours = 48
+    print(f"No lookback_hours parameter provided, defaulting to {lookback_hours} hours.")
+
+# 2. Read the raw data from the bronze layer, focusing on the most recent data
+# We'll read data ingested within the specified lookback period to capture all recent changes.
 power_df_raw = spark.read.format("delta").table("bronze.power_data") \
-    .filter("ingested_at >= now() - interval 48 hours")
+    .filter(f"ingested_at >= now() - interval {lookback_hours} hours")
 
 carbon_df_raw = spark.read.format("delta").table("bronze.carbon_data") \
-    .filter("ingested_at >= now() - interval 48 hours")
+    .filter(f"ingested_at >= now() - interval {lookback_hours} hours")
 
-# 2. Define schemas for the nested JSON to properly parse the data
-# Schema for power data
+# 3. Define schemas for the nested JSON to properly parse the data
+# Correct Schema for power data, including the root-level fields in the correct order
 power_schema = StructType([
-    StructType([
-        StringType(), # zone
-        ArrayType(
-            StructType([
-                StringType(), # zone
-                StringType(), # datetime
-                StringType(), # updatedAt
-                StringType(), # createdAt
-                MapType(StringType(), LongType()), # powerConsumptionBreakdown
-                MapType(StringType(), LongType()), # powerProductionBreakdown
-                MapType(StringType(), LongType()), # powerImportBreakdown
-                MapType(StringType(), LongType()), # powerExportBreakdown
-                LongType(), # fossilFreePercentage
-                LongType(), # renewablePercentage
-                LongType(), # powerConsumptionTotal
-                LongType(), # powerProductionTotal
-                LongType(), # powerImportTotal
-                LongType(), # powerExportTotal
-                BooleanType(), # isEstimated
-                StringType() # estimationMethod
-            ])
-        ) # history
-    ])
+    StructField("zone", StringType()),
+    StructField("history", ArrayType(
+        StructType([
+            StructField("zone", StringType()),
+            StructField("datetime", StringType()),
+            StructField("updatedAt", StringType()),
+            StructField("createdAt", StringType()),
+            StructField("powerConsumptionBreakdown", MapType(StringType(), LongType())),
+            StructField("powerProductionBreakdown", MapType(StringType(), LongType())),
+            StructField("powerImportBreakdown", MapType(StringType(), LongType())),
+            StructField("powerExportBreakdown", MapType(StringType(), LongType())),
+            StructField("fossilFreePercentage", LongType()),
+            StructField("renewablePercentage", LongType()),
+            StructField("powerConsumptionTotal", LongType()),
+            StructField("powerProductionTotal", LongType()),
+            StructField("powerImportTotal", LongType()),
+            StructField("powerExportTotal", LongType()),
+            StructField("isEstimated", BooleanType()),
+            StructField("estimationMethod", StringType())
+        ])
+    )),
+    StructField("temporalGranularity", StringType())
 ])
 
-# Schema for carbon intensity data
+# Correct Schema for carbon intensity data, including the root-level fields in the correct order
 carbon_schema = StructType([
-    StructType([
-        StringType(), # zone
-        ArrayType(
-            StructType([
-                StringType(), # zone
-                LongType(), # carbonIntensity
-                StringType(), # datetime
-                StringType(), # updatedAt
-                StringType(), # createdAt
-                StringType(), # emissionFactorType
-                BooleanType(), # isEstimated
-                StringType() # estimationMethod
-            ])
-        ) # history
-    ])
+    StructField("zone", StringType()),
+    StructField("history", ArrayType(
+        StructType([
+            StructField("zone", StringType()),
+            StructField("carbonIntensity", LongType()),
+            StructField("datetime", StringType()),
+            StructField("updatedAt", StringType()),
+            StructField("createdAt", StringType()),
+            StructField("emissionFactorType", StringType()),
+            StructField("isEstimated", BooleanType()),
+            StructField("estimationMethod", StringType())
+        ])
+    )),
+    StructField("temporalGranularity", StringType())
 ])
 
-# 3. Flatten and select the history array for each dataframe
+# 4. Flatten and select the history array for each dataframe
 # We will explode the 'history' array to create a row for each entry
 power_df_flattened = (
     power_df_raw.select(
@@ -126,7 +128,7 @@ carbon_df_flattened = (
     )
 )
 
-# 4. Deduplicate the flattened data to ensure we have the most recent version
+# 5. Deduplicate the flattened data to ensure we have the most recent version
 window_spec = Window.partitionBy("zone", "datetime").orderBy(col("ingested_at").desc())
 
 power_df_deduped = power_df_flattened.withColumn("row_num", row_number().over(window_spec)) \
@@ -137,12 +139,13 @@ carbon_df_deduped = carbon_df_flattened.withColumn("row_num", row_number().over(
     .filter(col("row_num") == 1) \
     .drop("row_num")
 
-# 5. Join the two dataframes on datetime and zone
+# 6. Join the two dataframes on datetime and zone
 silver_df = power_df_deduped.join(carbon_df_deduped, on=["zone", "datetime"], how="inner") \
     .drop(carbon_df_deduped.ingested_at) \
     .drop(power_df_deduped.updatedAt)
 
-# 6. Perform a MERGE to incrementally update the silver table
+# 7. Perform a MERGE to incrementally update the silver table
+# This is the key to an efficient, idempotent pipeline
 spark.sql("CREATE SCHEMA IF NOT EXISTS silver")
 silver_table_path = "silver.energy_data"
 
