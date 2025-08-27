@@ -9,7 +9,7 @@ from pyspark.sql.types import StructType, StringType, ArrayType, MapType, LongTy
 # IMPORTANT: This notebook assumes you have already created a secret scope
 # and added your API token to it using the Databricks CLI.
 try:
-    api_token = dbutils.secrets.get(scope="APIs", key="visualcrossing-token")
+    api_token = dbutils.secrets.get(scope="APIs", key="vissualcrossing-token")
 except Exception as e:
     print(f"Failed to get secret: {e}")
     api_token = "dummy-token"

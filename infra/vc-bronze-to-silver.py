@@ -22,16 +22,16 @@ except:
 
 # 2. Read the raw data from the bronze layer, focusing on the most recent data
 # We'll read data ingested within the specified lookback period to capture all recent changes.
-bronze_df = spark.read.format("delta").table("bronze.weather_data") \
+bronze_df = spark.read.format("delta").table("bronze.weather_forecast_data") \
     .filter(f"ingested_at >= now() - interval {lookback_hours} hours")
 
 # 3. Define the final schema for the weather forecast data
 # Added the 'ingested_at' to the schema
 weather_schema = StructType([
     StructField("name", StringType(), True),
-    StructField("datetime", TimestampType(), True),
     StructField("latitude", DoubleType(), True),
     StructField("longitude", DoubleType(), True),
+    StructField("datetime", TimestampType(), True),
     StructField("temp", DoubleType(), True),
     StructField("humidity", DoubleType(), True),
     StructField("precip", DoubleType(), True),
@@ -39,6 +39,7 @@ weather_schema = StructType([
     StructField("winddir", DoubleType(), True),
     StructField("cloudcover", DoubleType(), True),
     StructField("solarenergy", DoubleType(), True),
+    StructField("stations", StringType(), True),
     StructField("ingested_at", TimestampType(), True)
 ])
 
@@ -57,7 +58,7 @@ def parse_and_flatten_csv(row):
     df = df.iloc[:, 1:]
     
     # Rename columns to match the defined schema
-    df.columns = ["name", "datetime", "latitude", "longitude", "temp", "humidity", "precip", "windspeed", "winddir", "cloudcover", "solarenergy"]
+    df.columns = ["name", "latitude", "longitude", "datetime", "temp", "humidity", "precip", "windspeed", "winddir", "cloudcover", "solarenergy", "stations"]
     
     # Add the ingestion timestamp to every row
     df['ingested_at'] = row['ingested_at']
@@ -65,8 +66,13 @@ def parse_and_flatten_csv(row):
     # Convert pandas DataFrame to Spark DataFrame
     spark_df = spark.createDataFrame(df)
     
-    # Convert the 'datetime' column from local time to UTC
-    spark_df = spark_df.withColumn("datetime", to_utc_timestamp(col("datetime"), timezone))
+    # Convert the 'datetime' column to string, then to timestamp, then to UTC
+    spark_df = spark_df.withColumn(
+        "datetime",
+        to_utc_timestamp(
+            to_timestamp(col("datetime").cast("string")), timezone
+        )
+    )
     
     return spark_df
 
