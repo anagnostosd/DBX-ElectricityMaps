@@ -19,47 +19,46 @@ carbon_df_raw = spark.read.format("delta").table("bronze.carbon_data") \
     .filter(f"ingested_at >= now() - interval {lookback_hours} hours")
 
 # 3. Define schemas for the nested JSON to properly parse the data
-# Correct Schema for power data, including the root-level fields in the correct order
+power_history_item_schema = StructType([
+    StructField("zone", StringType()),
+    StructField("datetime", StringType()),
+    StructField("updatedAt", StringType()),
+    StructField("createdAt", StringType()),
+    StructField("powerConsumptionBreakdown", MapType(StringType(), LongType())),
+    StructField("powerProductionBreakdown", MapType(StringType(), LongType())),
+    StructField("powerImportBreakdown", MapType(StringType(), LongType())),
+    StructField("powerExportBreakdown", MapType(StringType(), LongType())),
+    StructField("fossilFreePercentage", LongType()),
+    StructField("renewablePercentage", LongType()),
+    StructField("powerConsumptionTotal", LongType()),
+    StructField("powerProductionTotal", LongType()),
+    StructField("powerImportTotal", LongType()),
+    StructField("powerExportTotal", LongType()),
+    StructField("isEstimated", BooleanType()),
+    StructField("estimationMethod", StringType())
+])
+
 power_schema = StructType([
     StructField("zone", StringType()),
-    StructField("history", ArrayType(
-        StructType([
-            StructField("zone", StringType()),
-            StructField("datetime", StringType()),
-            StructField("updatedAt", StringType()),
-            StructField("createdAt", StringType()),
-            StructField("powerConsumptionBreakdown", MapType(StringType(), LongType())),
-            StructField("powerProductionBreakdown", MapType(StringType(), LongType())),
-            StructField("powerImportBreakdown", MapType(StringType(), LongType())),
-            StructField("powerExportBreakdown", MapType(StringType(), LongType())),
-            StructField("fossilFreePercentage", LongType()),
-            StructField("renewablePercentage", LongType()),
-            StructField("powerConsumptionTotal", LongType()),
-            StructField("powerProductionTotal", LongType()),
-            StructField("powerImportTotal", LongType()),
-            StructField("powerExportTotal", LongType()),
-            StructField("isEstimated", BooleanType()),
-            StructField("estimationMethod", StringType())
-        ])
-    )),
+    StructField("history", ArrayType(power_history_item_schema)),
     StructField("temporalGranularity", StringType())
 ])
 
-# Correct Schema for carbon intensity data, including the root-level fields in the correct order
+# Correct Schema for carbon intensity data, including the root-level fields
+carbon_history_item_schema = StructType([
+    StructField("zone", StringType()),
+    StructField("carbonIntensity", LongType()),
+    StructField("datetime", StringType()),
+    StructField("updatedAt", StringType()),
+    StructField("createdAt", StringType()),
+    StructField("emissionFactorType", StringType()),
+    StructField("isEstimated", BooleanType()),
+    StructField("estimationMethod", StringType())
+])
+
 carbon_schema = StructType([
     StructField("zone", StringType()),
-    StructField("history", ArrayType(
-        StructType([
-            StructField("zone", StringType()),
-            StructField("carbonIntensity", LongType()),
-            StructField("datetime", StringType()),
-            StructField("updatedAt", StringType()),
-            StructField("createdAt", StringType()),
-            StructField("emissionFactorType", StringType()),
-            StructField("isEstimated", BooleanType()),
-            StructField("estimationMethod", StringType())
-        ])
-    )),
+    StructField("history", ArrayType(carbon_history_item_schema)),
     StructField("temporalGranularity", StringType())
 ])
 
@@ -74,9 +73,10 @@ power_df_flattened = (
     .withColumn("history", col("history"))
     .selectExpr("ingested_at", "explode(history) as history_item")
     .selectExpr(
+        "ingested_at",
         "history_item.zone",
-        "to_timestamp(history_item.datetime, 'yyyy-MM-dd''T''HH:mm:ss.SSS''Z') as datetime",
-        "to_timestamp(history_item.updatedAt, 'yyyy-MM-dd''T''HH:mm:ss.SSS''Z') as updatedAt",
+        "to_timestamp(history_item.datetime, \"yyyy-MM-dd'T'HH:mm:ss.SSS'Z'\") as datetime",
+        "to_timestamp(history_item.updatedAt, \"yyyy-MM-dd'T'HH:mm:ss.SSS'Z'\") as updatedAt",
         "history_item.isEstimated",
         "history_item.powerConsumptionBreakdown.nuclear as consumption_nuclear",
         "history_item.powerConsumptionBreakdown.geothermal as consumption_geothermal",
@@ -120,9 +120,10 @@ carbon_df_flattened = (
     .withColumn("history", col("history"))
     .selectExpr("ingested_at", "explode(history) as history_item")
     .selectExpr(
+        "ingested_at",
         "history_item.zone",
-        "to_timestamp(history_item.datetime, 'yyyy-MM-dd''T''HH:mm:ss.SSS''Z') as datetime",
-        "to_timestamp(history_item.updatedAt, 'yyyy-MM-dd''T''HH:mm:ss.SSS''Z') as updatedAt",
+        "to_timestamp(history_item.datetime, \"yyyy-MM-dd'T'HH:mm:ss.SSS'Z'\") as datetime",
+        "to_timestamp(history_item.updatedAt, \"yyyy-MM-dd'T'HH:mm:ss.SSS'Z'\") as updatedAt",
         "history_item.isEstimated",
         "history_item.carbonIntensity as carbon_intensity"
     )
@@ -136,16 +137,18 @@ power_df_deduped = (
     .withColumn("row_num", row_number().over(window_spec))
     .filter(col("row_num") == 1)
     .drop("row_num")
-    .withColumnRenamed("ingested_at", "power_ingested_at")
 )
+power_df_deduped = power_df_deduped.withColumnRenamed("isEstimated", "isEstimated_power")
+power_df_deduped = power_df_deduped.withColumnRenamed("ingested_at", "ingested_at_power")
 
 carbon_df_deduped = (
     carbon_df_flattened
     .withColumn("row_num", row_number().over(window_spec))
     .filter(col("row_num") == 1)
     .drop("row_num")
-    .withColumnRenamed("ingested_at", "carbon_ingested_at")
 )
+carbon_df_deduped = carbon_df_deduped.withColumnRenamed("isEstimated", "isEstimated_carbon")
+carbon_df_deduped = carbon_df_deduped.withColumnRenamed("ingested_at", "ingested_at_carbon")
 
 # 6. Join the two dataframes on datetime and zone
 silver_df = power_df_deduped.join(carbon_df_deduped, on=["zone", "datetime"], how="inner")
@@ -153,8 +156,10 @@ silver_df = power_df_deduped.join(carbon_df_deduped, on=["zone", "datetime"], ho
 silver_df = silver_df.select(
     col("zone"),
     col("datetime"),
-    col("power_ingested_at").alias("ingested_at"),
-    col("isEstimated"),
+    col("ingested_at_power").alias("ingested_at"),
+    col("ingested_at_carbon"),
+    col("isEstimated_power"),
+    col("isEstimated_carbon"),
     col("consumption_nuclear"),
     col("consumption_geothermal"),
     col("consumption_biomass"),
