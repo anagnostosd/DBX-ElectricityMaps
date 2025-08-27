@@ -1,7 +1,8 @@
-from pyspark.sql.functions import col, hour, dayofweek, month, lag, avg, window
+from pyspark.sql.functions import col, hour, dayofweek, month, lag, avg, window, lit, to_timestamp, to_utc_timestamp
 from pyspark.sql.window import Window
 from delta.tables import DeltaTable
 import pyspark.sql.functions as F
+import datetime
 
 # 1. Get the lookback interval from a notebook widget. Default to 48 hours.
 try:
@@ -11,21 +12,55 @@ except:
     print(f"No lookback_hours parameter provided, defaulting to {lookback_hours} hours.")
 
 # 2. Read data from the silver layer, focusing on the most recent data
-# We'll read data where the datetime is within the specified lookback period
-silver_df = spark.read.format("delta").table("silver.energy_data") \
+silver_energy_df = spark.read.format("delta").table("silver.energy_data") \
+    .filter(f"datetime >= now() - interval {lookback_hours} hours")
+    
+silver_weather_df = spark.read.format("delta").table("silver.weather_forecast_data") \
     .filter(f"datetime >= now() - interval {lookback_hours} hours")
 
-# 3. Handle potential missing values by filling with a reasonable default
+# 3. Pivot the weather data from long to wide format
+# We need to handle potential nulls for locations that might not have data for every timestamp.
+# Let's select the weather columns we want to pivot
+weather_cols = ["temp", "humidity", "precip", "windspeed", "solarenergy", "winddir"]
+pivot_df = silver_weather_df.groupBy("datetime").pivot("name").agg(*[F.first(col).alias(col) for col in weather_cols])
+
+# Rename the pivoted columns for clarity
+pivoted_weather_df = pivot_df.select(
+    "datetime",
+    col("Athens, Greece_temp").alias("temp_athens"),
+    col("Athens, Greece_humidity").alias("humidity_athens"),
+    col("Athens, Greece_precip").alias("precip_athens"),
+    col("Athens, Greece_windspeed").alias("windspeed_athens"),
+    col("Athens, Greece_solarenergy").alias("solarenergy_athens"),
+    col("Athens, Greece_winddir").alias("winddir_athens"),
+    col("Heraklion, Greece_temp").alias("temp_heraklion"),
+    col("Heraklion, Greece_humidity").alias("humidity_heraklion"),
+    col("Heraklion, Greece_precip").alias("precip_heraklion"),
+    col("Heraklion, Greece_windspeed").alias("windspeed_heraklion"),
+    col("Heraklion, Greece_solarenergy").alias("solarenergy_heraklion"),
+    col("Heraklion, Greece_winddir").alias("winddir_heraklion"),
+    col("Thessaloniki, Greece_temp").alias("temp_thessaloniki"),
+    col("Thessaloniki, Greece_humidity").alias("humidity_thessaloniki"),
+    col("Thessaloniki, Greece_precip").alias("precip_thessaloniki"),
+    col("Thessaloniki, Greece_windspeed").alias("windspeed_thessaloniki"),
+    col("Thessaloniki, Greece_solarenergy").alias("solarenergy_thessaloniki"),
+    col("Thessaloniki, Greece_winddir").alias("winddir_thessaloniki")
+)
+
+# 4. Join the energy and pivoted weather dataframes
+gold_df = silver_energy_df.join(pivoted_weather_df, on=["datetime"], how="left_outer")
+
+# 5. Handle potential missing values by filling with a reasonable default
 # In this case, we'll fill nulls with 0. In a real-world scenario, you might use
 # more advanced imputation techniques.
-silver_df = silver_df.fillna(0)
+gold_df = gold_df.fillna(0)
 
-# 4. Create time-based features
-gold_df = silver_df.withColumn("hour", hour("datetime")) \
+# 6. Create time-based features
+gold_df = gold_df.withColumn("hour", hour("datetime")) \
                  .withColumn("day_of_week", dayofweek("datetime")) \
                  .withColumn("month", month("datetime"))
 
-# 5. Create time-series features (lagged values and rolling averages)
+# 7. Create time-series features (lagged values and rolling averages)
 # We need to use a window function to perform these calculations correctly
 window_spec = Window.partitionBy("zone").orderBy("datetime")
 
@@ -39,18 +74,21 @@ lag_columns = [
     "production_gas", "production_oil", "production_total",
     "import_total", "export_total", "carbon_intensity",
     "import_AL", "import_BG", "import_MK", "import_TR",
-    "export_AL", "export_BG", "export_MK", "export_TR"
+    "export_AL", "export_BG", "export_MK", "export_TR",
+    "temp_athens", "humidity_athens", "precip_athens", "windspeed_athens", "solarenergy_athens", "winddir_athens",
+    "temp_heraklion", "humidity_heraklion", "precip_heraklion", "windspeed_heraklion", "solarenergy_heraklion", "winddir_heraklion",
+    "temp_thessaloniki", "humidity_thessaloniki", "precip_thessaloniki", "windspeed_thessaloniki", "solarenergy_thessaloniki", "winddir_thessaloniki"
 ]
 
-# Add lagged 1-hour features and a 24-hour rolling average for all relevant columns
+# Add lagged 1-hour and a 24-hour rolling average for all relevant columns
 for column in lag_columns:
     gold_df = gold_df.withColumn(f"lag_{column}_1h", lag(col(column), 1).over(window_spec))
     gold_df = gold_df.withColumn(f"rolling_avg_{column}_24h", avg(col(column)).over(window_spec.rowsBetween(-23, 0)))
 
-# 6. Handle nulls created by the window functions (at the start of the time series)
+# 8. Handle nulls created by the window functions (at the start of the time series)
 gold_df = gold_df.fillna(0)
 
-# 7. Write the final DataFrame to the gold layer using an efficient merge strategy
+# 9. Write the final DataFrame to the gold layer using an efficient merge strategy
 spark.sql("CREATE SCHEMA IF NOT EXISTS gold")
 gold_table_name = "gold.ml_features"
 
