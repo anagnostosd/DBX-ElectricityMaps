@@ -34,29 +34,20 @@ weather_forecast_df = silver_weather_df.filter(col("datetime") > latest_ingestio
 
 # 4. Pivot the historic weather data from long to wide format
 weather_cols = ["temp", "humidity", "precip", "windspeed", "solarenergy", "winddir"]
-historic_pivot_df = weather_historic_df.groupBy("datetime").pivot("name").agg(*[F.first(col).alias(col) for col in weather_cols])
+locations = ["Athens, Greece", "Heraklion, Greece", "Thessaloniki, Greece"]
 
-pivoted_historic_weather_df = historic_pivot_df.select(
-    "datetime",
-    col("Athens, Greece_temp").alias("temp_athens"),
-    col("Athens, Greece_humidity").alias("humidity_athens"),
-    col("Athens, Greece_precip").alias("precip_athens"),
-    col("Athens, Greece_windspeed").alias("windspeed_athens"),
-    col("Athens, Greece_solarenergy").alias("solarenergy_athens"),
-    col("Athens, Greece_winddir").alias("winddir_athens"),
-    col("Heraklion, Greece_temp").alias("temp_heraklion"),
-    col("Heraklion, Greece_humidity").alias("humidity_heraklion"),
-    col("Heraklion, Greece_precip").alias("precip_heraklion"),
-    col("Heraklion, Greece_windspeed").alias("windspeed_heraklion"),
-    col("Heraklion, Greece_solarenergy").alias("solarenergy_heraklion"),
-    col("Heraklion, Greece_winddir").alias("winddir_heraklion"),
-    col("Thessaloniki, Greece_temp").alias("temp_thessaloniki"),
-    col("Thessaloniki, Greece_humidity").alias("humidity_thessaloniki"),
-    col("Thessaloniki, Greece_precip").alias("precip_thessaloniki"),
-    col("Thessaloniki, Greece_windspeed").alias("windspeed_thessaloniki"),
-    col("Thessaloniki, Greece_solarenergy").alias("solarenergy_thessaloniki"),
-    col("Thessaloniki, Greece_winddir").alias("winddir_thessaloniki")
-)
+# The pivot function with special characters in column names can be tricky.
+# We will create a list of select expressions to safely rename columns.
+pivot_df = weather_historic_df.groupBy("datetime").pivot("name", locations).agg(*[F.first(col).alias(col) for col in weather_cols])
+
+# Dynamically create the list of renamed columns
+select_cols = [col("datetime")]
+for location in locations:
+    sanitized_location = location.replace(", Greece", "").replace(" ", "_").lower()
+    for wc in weather_cols:
+        select_cols.append(col(f"`{location}_{wc}`").alias(f"{wc}_{sanitized_location}"))
+
+pivoted_historic_weather_df = pivot_df.select(select_cols)
 
 # 5. Join the energy and pivoted historic weather dataframes to create the final historic gold table
 historic_gold_df = silver_energy_df.join(pivoted_historic_weather_df, on=["datetime"], how="left_outer")
