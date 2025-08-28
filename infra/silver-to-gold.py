@@ -10,7 +10,12 @@ try:
 except:
     lookback_hours = 48
     print(f"No lookback_hours parameter provided, defaulting to {lookback_hours} hours.")
-
+try:
+    tolerance_minutes = int(dbutils.widgets.get("tolerance_minutes"))
+except:
+    tolerance_minutes = 15
+    print(f"No tolerance_minutes parameter provided, defaulting to {tolerance_minutes} minutes.")
+    
 # We'll use the most recent ingested_at timestamp to define our 24h historic window
 latest_ingestion_time = spark.read.format("delta").table("silver.energy_data").select(F.max("ingested_at")).collect()[0][0]
 historic_data_start = latest_ingestion_time - datetime.timedelta(hours=24)
@@ -22,7 +27,10 @@ silver_energy_df = spark.read.format("delta").table("silver.energy_data") \
 
 # We will read only the most recent data from the silver weather table based on ingestion time
 silver_weather_df = spark.read.format("delta").table("silver.weather_forecast_data") \
-    .filter(col("ingested_at") == latest_ingestion_time)
+        .filter(
+        (col("ingested_at") >= (latest_ingestion_time - F.expr(f"INTERVAL {tolerance_minutes} MINUTES"))) &
+        (col("ingested_at") <= (latest_ingestion_time + F.expr(f"INTERVAL {tolerance_minutes} MINUTES")))
+    )
 
 # 3. Split weather data into historic observations and future forecasts based on ingestion time
 # Historic weather data: where forecast datetime is in the past, relative to the ingestion time
@@ -84,27 +92,21 @@ for column in lag_columns:
 
 historic_gold_df = historic_gold_df.fillna(0)
 
-# 7. Create a composite key and additional time features for the weather forecast table
-forecast_gold_df = weather_forecast_df \
+# 7. Create a pivoted weather forecast table
+weather_forecast_df_with_key = weather_forecast_df \
     .withColumn("ingested_hour_utc", to_timestamp(date_format(col("ingested_at"), "yyyy-MM-dd HH:00:00"))) \
-    .withColumn("forecast_offset_h", (unix_timestamp(col("datetime")) - unix_timestamp(col("ingested_at"))) / 3600) \
-    .withColumn("hour_of_day", hour("datetime")) \
-    .withColumn("day_of_week", dayofweek("datetime")) \
-    .withColumn("month", month("datetime")) \
-    .withColumn("day_of_year", dayofyear("datetime")) \
-    .withColumn("week_of_year", weekofyear("datetime")) \
-    .select(
-        "ingested_hour_utc",
-        "datetime",
-        "name",
-        "forecast_offset_h",
-        "hour_of_day",
-        "day_of_week",
-        "month",
-        "day_of_year",
-        "week_of_year",
-        "temp", "humidity", "precip", "windspeed", "winddir", "cloudcover", "solarenergy"
-    )
+    .withColumn("forecast_offset_h", ((unix_timestamp(col("datetime")) - unix_timestamp(col("ingested_at"))) / 3600).cast("integer"))
+
+forecast_pivot_df = weather_forecast_df_with_key.groupBy("ingested_hour_utc", "datetime", "forecast_offset_h").pivot("name", locations).agg(*[F.first(col).alias(col) for col in weather_cols])
+
+# Dynamically create the list of renamed columns for the forecast table
+forecast_select_cols = [col("ingested_hour_utc"), col("datetime"), col("forecast_offset_h")]
+for location in locations:
+    sanitized_location = location.replace(", Greece", "").replace(" ", "_").lower()
+    for wc in weather_cols:
+        forecast_select_cols.append(col(f"`{location}_{wc}`").alias(f"{wc}_{sanitized_location}"))
+
+forecast_gold_df = forecast_pivot_df.select(forecast_select_cols)
 
 # 8. Write the final DataFrames to the gold layer tables
 spark.sql("CREATE SCHEMA IF NOT EXISTS gold")
@@ -134,8 +136,9 @@ else:
     delta_table.alias("old_data") \
         .merge(
             forecast_gold_df.alias("new_data"),
-            "old_data.ingested_hour_utc = new_data.ingested_hour_utc AND old_data.datetime = new_data.datetime AND old_data.name = new_data.name"
+            "old_data.ingested_hour_utc = new_data.ingested_hour_utc AND old_data.datetime = new_data.datetime"
         ) \
+        .whenMatchedUpdateAll() \
         .whenNotMatchedInsertAll() \
         .execute()
 print("Gold layer weather forecasts update complete.")
