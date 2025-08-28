@@ -36,7 +36,7 @@ def fetch_and_write_weather_data(location, table_name):
     """
     print(f"Fetching weather data for {location}...")
     try:
-        url = f"{base_url}/{location}/next24hours/tomorrow"
+        url = f"{base_url}/{location}/yesterday/tomorrow"
         response = requests.request("GET", url, params=params)
         response.raise_for_status()
 
