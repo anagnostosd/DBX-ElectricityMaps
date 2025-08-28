@@ -1,4 +1,4 @@
-from pyspark.sql.functions import col, hour, dayofweek, month, lag, avg, window, lit, to_timestamp, to_utc_timestamp, abs, round, unix_timestamp, datediff, date_format, to_date
+from pyspark.sql.functions import col, hour, dayofweek, month, lag, avg, window, lit, to_timestamp, to_utc_timestamp, abs, round, unix_timestamp, datediff, date_format, to_date, dayofyear, weekofyear
 from pyspark.sql.window import Window
 from delta.tables import DeltaTable
 import pyspark.sql.functions as F
@@ -52,6 +52,13 @@ pivoted_historic_weather_df = pivot_df.select(select_cols)
 # 5. Join the energy and pivoted historic weather dataframes to create the final historic gold table
 historic_gold_df = silver_energy_df.join(pivoted_historic_weather_df, on=["datetime"], how="left_outer")
 
+# Add more time-based features to the historic data
+historic_gold_df = historic_gold_df.withColumn("hour_of_day", hour("datetime")) \
+                 .withColumn("day_of_week", dayofweek("datetime")) \
+                 .withColumn("month", month("datetime")) \
+                 .withColumn("day_of_year", dayofyear("datetime")) \
+                 .withColumn("week_of_year", weekofyear("datetime"))
+
 # 6. Create features for the historic gold table
 window_spec = Window.partitionBy("zone").orderBy("datetime")
 
@@ -77,15 +84,25 @@ for column in lag_columns:
 
 historic_gold_df = historic_gold_df.fillna(0)
 
-# 7. Create a composite key for the weather forecast table
+# 7. Create a composite key and additional time features for the weather forecast table
 forecast_gold_df = weather_forecast_df \
     .withColumn("ingested_hour_utc", to_timestamp(date_format(col("ingested_at"), "yyyy-MM-dd HH:00:00"))) \
     .withColumn("forecast_offset_h", (unix_timestamp(col("datetime")) - unix_timestamp(col("ingested_at"))) / 3600) \
+    .withColumn("hour_of_day", hour("datetime")) \
+    .withColumn("day_of_week", dayofweek("datetime")) \
+    .withColumn("month", month("datetime")) \
+    .withColumn("day_of_year", dayofyear("datetime")) \
+    .withColumn("week_of_year", weekofyear("datetime")) \
     .select(
         "ingested_hour_utc",
         "datetime",
         "name",
         "forecast_offset_h",
+        "hour_of_day",
+        "day_of_week",
+        "month",
+        "day_of_year",
+        "week_of_year",
         "temp", "humidity", "precip", "windspeed", "winddir", "cloudcover", "solarenergy"
     )
 
