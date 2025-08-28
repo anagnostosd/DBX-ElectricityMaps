@@ -1,4 +1,4 @@
-from pyspark.sql.functions import col, hour, dayofweek, month, lag, avg, window, lit, to_timestamp, to_utc_timestamp, row_number
+from pyspark.sql.functions import col, hour, dayofweek, month, lag, avg, window, lit, to_timestamp, to_utc_timestamp, abs, round, unix_timestamp, datediff, date_format, to_date
 from pyspark.sql.window import Window
 from delta.tables import DeltaTable
 import pyspark.sql.functions as F
@@ -11,26 +11,32 @@ except:
     lookback_hours = 48
     print(f"No lookback_hours parameter provided, defaulting to {lookback_hours} hours.")
 
-# 2. Read data from the silver layer, focusing on the most recent data
+# We'll use the most recent ingested_at timestamp to define our 24h historic window
+latest_ingestion_time = spark.read.format("delta").table("silver.energy_data").select(F.max("ingested_at")).collect()[0][0]
+historic_data_start = latest_ingestion_time - datetime.timedelta(hours=24)
+
+# 2. Read and filter data for the historic window
 silver_energy_df = spark.read.format("delta").table("silver.energy_data") \
-    .filter(f"datetime >= now() - interval {lookback_hours} hours")
-    
+    .filter(col("datetime") >= historic_data_start) \
+    .filter(col("ingested_at") == latest_ingestion_time)
+
+# We will read only the most recent data from the silver weather table based on ingestion time
 silver_weather_df = spark.read.format("delta").table("silver.weather_forecast_data") \
-    .filter(f"datetime >= now() - interval {lookback_hours} hours")
+    .filter(col("ingested_at") == latest_ingestion_time)
 
-# 3. Deduplicate the weather data, keeping only the latest forecast
-window_spec_weather = Window.partitionBy("name", "datetime").orderBy(col("ingested_at").desc())
-silver_weather_deduped_df = silver_weather_df.withColumn("row_num", row_number().over(window_spec_weather)) \
-    .filter(col("row_num") == 1) \
-    .drop("row_num")
+# 3. Split weather data into historic observations and future forecasts based on ingestion time
+# Historic weather data: where forecast datetime is in the past, relative to the ingestion time
+weather_historic_df = silver_weather_df.filter(col("datetime") <= latest_ingestion_time)
 
-# 4. Pivot the weather data from long to wide format
-# Let's select the weather columns we want to pivot
+# Forecast data: where the forecast datetime is in the future, relative to the ingestion time
+weather_forecast_df = silver_weather_df.filter(col("datetime") > latest_ingestion_time)
+
+
+# 4. Pivot the historic weather data from long to wide format
 weather_cols = ["temp", "humidity", "precip", "windspeed", "solarenergy", "winddir"]
-pivot_df = silver_weather_deduped_df.groupBy("datetime").pivot("name").agg(*[F.first(col).alias(col) for col in weather_cols])
+historic_pivot_df = weather_historic_df.groupBy("datetime").pivot("name").agg(*[F.first(col).alias(col) for col in weather_cols])
 
-# Rename the pivoted columns for clarity
-pivoted_weather_df = pivot_df.select(
+pivoted_historic_weather_df = historic_pivot_df.select(
     "datetime",
     col("Athens, Greece_temp").alias("temp_athens"),
     col("Athens, Greece_humidity").alias("humidity_athens"),
@@ -52,21 +58,10 @@ pivoted_weather_df = pivot_df.select(
     col("Thessaloniki, Greece_winddir").alias("winddir_thessaloniki")
 )
 
-# 5. Join the energy and pivoted weather dataframes
-gold_df = silver_energy_df.join(pivoted_weather_df, on=["datetime"], how="left_outer")
+# 5. Join the energy and pivoted historic weather dataframes to create the final historic gold table
+historic_gold_df = silver_energy_df.join(pivoted_historic_weather_df, on=["datetime"], how="left_outer")
 
-# 6. Handle potential missing values by filling with a reasonable default
-# In this case, we'll fill nulls with 0. In a real-world scenario, you might use
-# more advanced imputation techniques.
-gold_df = gold_df.fillna(0)
-
-# 7. Create time-based features
-gold_df = gold_df.withColumn("hour", hour("datetime")) \
-                 .withColumn("day_of_week", dayofweek("datetime")) \
-                 .withColumn("month", month("datetime"))
-
-# 8. Create time-series features (lagged values and rolling averages)
-# We need to use a window function to perform these calculations correctly
+# 6. Create features for the historic gold table
 window_spec = Window.partitionBy("zone").orderBy("datetime")
 
 # Define the columns for which we want to create lagged features and rolling averages
@@ -85,32 +80,54 @@ lag_columns = [
     "temp_thessaloniki", "humidity_thessaloniki", "precip_thessaloniki", "windspeed_thessaloniki", "solarenergy_thessaloniki", "winddir_thessaloniki"
 ]
 
-# Add lagged 1-hour and a 24-hour rolling average for all relevant columns
 for column in lag_columns:
-    gold_df = gold_df.withColumn(f"lag_{column}_1h", lag(col(column), 1).over(window_spec))
-    gold_df = gold_df.withColumn(f"rolling_avg_{column}_24h", avg(col(column)).over(window_spec.rowsBetween(-23, 0)))
+    historic_gold_df = historic_gold_df.withColumn(f"lag_{column}_1h", lag(col(column), 1).over(window_spec))
+    historic_gold_df = historic_gold_df.withColumn(f"rolling_avg_{column}_24h", avg(col(column)).over(window_spec.rowsBetween(-23, 0)))
 
-# 9. Handle nulls created by the window functions (at the start of the time series)
-gold_df = gold_df.fillna(0)
+historic_gold_df = historic_gold_df.fillna(0)
 
-# 10. Write the final DataFrame to the gold layer using an efficient merge strategy
+# 7. Create a composite key for the weather forecast table
+forecast_gold_df = weather_forecast_df \
+    .withColumn("ingested_hour_utc", to_timestamp(date_format(col("ingested_at"), "yyyy-MM-dd HH:00:00"))) \
+    .withColumn("forecast_offset_h", (unix_timestamp(col("datetime")) - unix_timestamp(col("ingested_at"))) / 3600) \
+    .select(
+        "ingested_hour_utc",
+        "datetime",
+        "name",
+        "forecast_offset_h",
+        "temp", "humidity", "precip", "windspeed", "winddir", "cloudcover", "solarenergy"
+    )
+
+# 8. Write the final DataFrames to the gold layer tables
 spark.sql("CREATE SCHEMA IF NOT EXISTS gold")
-gold_table_name = "gold.ml_features"
 
-if not spark.catalog.tableExists(gold_table_name):
-    # If the table doesn't exist, create it with a simple write
-    print("Gold table does not exist. Creating it...")
-    gold_df.write.format("delta").mode("overwrite").saveAsTable(gold_table_name)
+# Write to historic data table
+historic_table_name = "gold.historic_data"
+if not spark.catalog.tableExists(historic_table_name):
+    historic_gold_df.write.format("delta").mode("overwrite").saveAsTable(historic_table_name)
 else:
-    # If the table exists, perform a MERGE
-    print("Gold table exists. Merging new data...")
-    delta_table = DeltaTable.forName(spark, gold_table_name)
-    
+    delta_table = DeltaTable.forName(spark, historic_table_name)
     delta_table.alias("old_data") \
         .merge(
-            gold_df.alias("new_data"),
+            historic_gold_df.alias("new_data"),
             "old_data.zone = new_data.zone AND old_data.datetime = new_data.datetime"
         ) \
         .whenMatchedUpdateAll() \
         .whenNotMatchedInsertAll() \
         .execute()
+print("Gold layer historic data update complete.")
+
+# Write to weather forecasts table
+forecast_table_name = "gold.weather_forecasts"
+if not spark.catalog.tableExists(forecast_table_name):
+    forecast_gold_df.write.format("delta").mode("overwrite").saveAsTable(forecast_table_name)
+else:
+    delta_table = DeltaTable.forName(spark, forecast_table_name)
+    delta_table.alias("old_data") \
+        .merge(
+            forecast_gold_df.alias("new_data"),
+            "old_data.ingested_hour_utc = new_data.ingested_hour_utc AND old_data.datetime = new_data.datetime AND old_data.name = new_data.name"
+        ) \
+        .whenNotMatchedInsertAll() \
+        .execute()
+print("Gold layer weather forecasts update complete.")
