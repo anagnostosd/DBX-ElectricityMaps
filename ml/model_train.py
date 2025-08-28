@@ -22,7 +22,7 @@ forecasts_df = spark.read.format("delta").table("gold.weather_forecasts")
 ingestion_hours = (
     forecasts_df.select("ingested_hour_utc")
     .distinct()
-    .sort("ingestion_hour_utc")
+    .sort("ingested_hour_utc")
     .collect()
 )
 ingestion_hours = [row[0] for row in ingestion_hours]
