@@ -1,0 +1,48 @@
+resources:
+  jobs:
+    API_to_gold:
+      name: API-to-gold
+      schedule:
+        quartz_cron_expression: 18 10 0/3 * * ?
+        timezone_id: Europe/Athens
+        pause_status: UNPAUSED
+      tasks:
+        - task_key: source-to-bronze-electricity-maps
+          spark_python_task:
+            python_file: YOUR_PATH_TO_GIT_IN_DBX/infra/em-source-to-bronze.py
+          min_retry_interval_millis: 900000
+          disable_auto_optimization: true
+          environment_key: Default
+        - task_key: bronze-to-silver-electricity-maps
+          depends_on:
+            - task_key: source-to-bronze-electricity-maps
+          spark_python_task:
+            python_file: YOUR_PATH_TO_GIT_IN_DBX/infra/em-bronze-to-silver.py
+          environment_key: Default
+        - task_key: source-to-bronze-vissualcrossing
+          spark_python_task:
+            python_file: YOUR_PATH_TO_GIT_IN_DBX/infra/vc-source-to-bronze.py
+          environment_key: Default
+        - task_key: bronze-to-silver-vissualcrossing
+          depends_on:
+            - task_key: source-to-bronze-vissualcrossing
+          spark_python_task:
+            python_file: YOUR_PATH_TO_GIT_IN_DBX/infra/vc-bronze-to-silver.py
+          environment_key: Default
+        - task_key: silver-to-gold
+          depends_on:
+            - task_key: bronze-to-silver-electricity-maps
+            - task_key: bronze-to-silver-vissualcrossing
+          spark_python_task:
+            python_file: YOUR_PATH_TO_GIT_IN_DBX/infra/silver-to-gold.py
+          environment_key: Default
+      queue:
+        enabled: true
+      parameters:
+        - name: lookback_hours
+          default: "48"
+      environments:
+        - environment_key: Default
+          spec:
+            client: "3"
+      performance_target: STANDARD

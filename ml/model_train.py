@@ -46,8 +46,8 @@ all_training_examples = []
 for ingestion_hour in ingestion_hours:
     # Get the last 24 hours of historic data for features and targets
     historic_data_window = historic_data_df \
-        .filter(col("datetime") >= (ingestion_hour - F.expr("INTERVAL 24 HOURS"))) \
-        .filter(col("datetime") < (ingestion_hour + F.expr("INTERVAL 24 HOURS"))) \
+        .filter(col("datetime") > (ingestion_hour - F.expr("INTERVAL 24 HOURS"))) \
+        .filter(col("datetime") <= (ingestion_hour + F.expr("INTERVAL 24 HOURS"))) \
         .orderBy("datetime") \
         .na.drop()
     
@@ -55,6 +55,7 @@ for ingestion_hour in ingestion_hours:
         # Get the next 24 hours of weather forecasts for the prediction period
         forecast_features_window = forecasts_df \
             .filter(col("ingested_hour_utc") == ingestion_hour) \
+            .filter(col("forecast_offset_h") <= 23) \
             .orderBy("datetime")
 
         # Get the historic features from the last 24 hours
@@ -63,7 +64,7 @@ for ingestion_hour in ingestion_hours:
         
         # Get the carbon intensity targets from the next 24 hours
         targets_window = historic_data_window \
-            .filter(col("datetime") >= ingestion_hour) \
+            .filter(col("datetime") > ingestion_hour) \
             .select(col("datetime"), col(target_column).alias("target_val"))
 
         if historic_features_window.count() == 24 and forecast_features_window.count() == 24 and targets_window.count() == 24:
