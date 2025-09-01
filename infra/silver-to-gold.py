@@ -87,6 +87,8 @@ lag_columns = [
 ]
 
 for column in lag_columns:
+    # Creating also lag_0h for easier reference to current value in models
+    historic_gold_df = historic_gold_df.withColumn(f"lag_{column}_0h", lag(col(column), 0).over(window_spec))
     historic_gold_df = historic_gold_df.withColumn(f"lag_{column}_1h", lag(col(column), 1).over(window_spec))
     historic_gold_df = historic_gold_df.withColumn(f"rolling_avg_{column}_24h", avg(col(column)).over(window_spec.rowsBetween(-23, 0)))
 
