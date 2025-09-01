@@ -83,7 +83,12 @@ for row in all_ingestion_times:
     window_spec = Window.partitionBy("zone").orderBy("datetime")
     
     lag_columns = [
-        "carbon_intensity", "powerConsumptionTotal", "powerProductionTotal", "powerImportTotal", "powerExportTotal",
+        "carbon_intensity","consumption_nuclear","consumption_geothermal","consumption_biomass",
+        "consumption_coal","consumption_wind","consumption_solar","consumption_hydro","consumption_gas",
+        "consumption_oil","consumption_total","production_nuclear","production_geothermal",
+        "production_biomass","production_coal","production_wind","production_solar",
+        "production_hydro","production_gas","production_oil","production_total","import_total",
+        "export_total","import_AL","import_BG","import_MK","import_TR","export_AL","export_BG","export_MK","export_TR",
         "temp_athens", "temp_thessaloniki", "temp_heraklion",
         "humidity_athens", "humidity_thessaloniki", "humidity_heraklion",
         "precip_athens", "precip_thessaloniki", "precip_heraklion",
