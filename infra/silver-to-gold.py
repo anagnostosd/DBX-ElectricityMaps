@@ -126,16 +126,17 @@ for row in all_ingestion_times:
     
     # --- Gold Weather Forecasts Table Transformation ---
     
-    forecast_pivot_df = weather_forecast_df.groupBy("ingested_hour_utc", "datetime", "forecast_offset_h").pivot("name", locations).agg(*[F.first(col).alias(col) for col in weather_cols])
+    forecast_pivot_df = weather_forecast_df.groupBy("ingested_hour_utc", "datetime").pivot("name", locations).agg(*[F.first(col).alias(col) for col in weather_cols])
     
-    forecast_select_cols = [col("ingested_hour_utc"), col("datetime"), col("forecast_offset_h")]
+    forecast_select_cols = [col("ingested_hour_utc"), col("datetime")]
     for location in locations:
         sanitized_location = location.replace(", Greece", "").replace(" ", "_").lower()
         for wc in weather_cols:
             forecast_select_cols.append(col(f"`{location}_{wc}`").alias(f"{wc}_{sanitized_location}"))
 
     forecast_gold_df = forecast_pivot_df.select(forecast_select_cols)
-
+    forecast_gold_df = forecast_gold_df.withColumn("forecast_offset_h", (unix_timestamp(col("datetime")) - unix_timestamp(col("ingested_hour_utc"))) / 3600).cast("int")
+    
     forecast_table_name = "gold.weather_forecasts"
     if not spark.catalog.tableExists(forecast_table_name):
         forecast_gold_df.write.format("delta").mode("overwrite").saveAsTable(forecast_table_name)
