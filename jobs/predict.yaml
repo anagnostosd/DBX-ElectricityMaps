@@ -1,0 +1,16 @@
+resources:
+  jobs:
+    Predict:
+      name: Predict
+      tasks:
+        - task_key: infer_with_model
+          spark_python_task:
+            python_file: YOUR-PATH-HERE/DBX-ElectricityMaps/ml/model_infer.py
+          environment_key: Default
+      queue:
+        enabled: true
+      environments:
+        - environment_key: Default
+          spec:
+            client: "3"
+      performance_target: STANDARD

@@ -1,0 +1,23 @@
+resources:
+  jobs:
+    Train_Model:
+      name: Train Model
+      trigger:
+        pause_status: UNPAUSED
+        periodic:
+          interval: 1
+          unit: WEEKS
+      tasks:
+        - task_key: train_and_register_model
+          spark_python_task:
+            python_file: YOUR-PATH-HERE/DBX-ElectricityMaps/ml/model_train.py
+          min_retry_interval_millis: 900000
+          disable_auto_optimization: true
+          environment_key: Default
+      queue:
+        enabled: true
+      environments:
+        - environment_key: Default
+          spec:
+            client: "3"
+      performance_target: STANDARD

@@ -9,7 +9,7 @@ resources:
       tasks:
         - task_key: source-to-bronze-electricity-maps
           spark_python_task:
-            python_file: YOUR_PATH_TO_GIT_IN_DBX/infra/em-source-to-bronze.py
+            python_file: /Workspace/Users/anagnostos.d@gmail.com/DBX-ElectricityMaps/infra/em-source-to-bronze.py
           min_retry_interval_millis: 900000
           disable_auto_optimization: true
           environment_key: Default
@@ -17,25 +17,30 @@ resources:
           depends_on:
             - task_key: source-to-bronze-electricity-maps
           spark_python_task:
-            python_file: YOUR_PATH_TO_GIT_IN_DBX/infra/em-bronze-to-silver.py
+            python_file: /Workspace/Users/anagnostos.d@gmail.com/DBX-ElectricityMaps/infra/em-bronze-to-silver.py
           environment_key: Default
         - task_key: source-to-bronze-vissualcrossing
           spark_python_task:
-            python_file: YOUR_PATH_TO_GIT_IN_DBX/infra/vc-source-to-bronze.py
+            python_file: /Workspace/Users/anagnostos.d@gmail.com/DBX-ElectricityMaps/infra/vc-source-to-bronze.py
           environment_key: Default
         - task_key: bronze-to-silver-vissualcrossing
           depends_on:
             - task_key: source-to-bronze-vissualcrossing
           spark_python_task:
-            python_file: YOUR_PATH_TO_GIT_IN_DBX/infra/vc-bronze-to-silver.py
+            python_file: /Workspace/Users/anagnostos.d@gmail.com/DBX-ElectricityMaps/infra/vc-bronze-to-silver.py
           environment_key: Default
         - task_key: silver-to-gold
           depends_on:
             - task_key: bronze-to-silver-electricity-maps
             - task_key: bronze-to-silver-vissualcrossing
           spark_python_task:
-            python_file: YOUR_PATH_TO_GIT_IN_DBX/infra/silver-to-gold.py
+            python_file: /Workspace/Users/anagnostos.d@gmail.com/DBX-ElectricityMaps/infra/silver-to-gold.py
           environment_key: Default
+        - task_key: run_inference
+          depends_on:
+            - task_key: silver-to-gold
+          run_job_task:
+            job_id: 456306526906449
       queue:
         enabled: true
       parameters:

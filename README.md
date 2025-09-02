@@ -1,7 +1,6 @@
 # Electricity Maps Data Pipeline
 
-This project demonstrates a foundational MLOps pipeline on Databricks, transforming raw data from the Electricity Maps and Visual Crossing APIs into a feature-rich, machine-learning-ready gold layer. 
-The pipeline is designed to be incremental, robust, and reproducible, following the core principles of the Medallion Architecture.
+This project demonstrates a foundational MLOps pipeline on Databricks, transforming raw data from the Electricity Maps and Visual Crossing APIs into a feature-rich, machine-learning-ready gold layer. The pipeline is designed to be incremental, robust, and reproducible, following the core principles of the Medallion Architecture.
 
 ## Project Overview
 
@@ -12,6 +11,8 @@ The primary goal of this pipeline is to ingest hourly power and carbon intensity
 * **Silver Layer**: Data cleaning and transformation.
 
 * **Gold Layer**: Feature engineering for machine learning.
+
+* **ML Training & Deployment**: Model training and serving.
 
 ## How to Run This Project
 
@@ -111,11 +112,15 @@ This section outlines the final stages of the MLOps pipeline, where the raw data
 
 * **Model Training**: We use a **Gradient Boosted Tree Regressor** to predict carbon intensity for the next 24 hours. The model is trained on a flattened dataset of historic features and future weather forecasts, with a chronological train-test split to prevent data leakage.
 
+    * **Key Assumptions**: Each training example is a single, flattened row that combines the latest historic features with the next 24 hours of forecast features and targets. The model learns to use `forecast_offset_h` to understand the prediction horizon.
+
 * **Experiment Tracking**: We use **MLflow** to manage and track all model training runs. It automatically logs key metrics, hyperparameters, and the model artifact itself, ensuring that all experiments are reproducible and easy to compare.
 
-* **Model Serving (Batch Prediction) -- Ongoing**: Since real-time serving is a premium feature on Databricks, the model will be deployed for **batch prediction**. A dedicated job will read the latest data from the gold tables, load the production model from the **MLflow Model Registry**, and write the 24-hour forecast predictions to a new Delta table.
+* **Model Serving (Batch Prediction)**: The model is deployed for **batch prediction** via a dedicated job. This job loads the production model from the **MLflow Model Registry**, prepares a prediction dataset from the latest gold tables, and writes the 24-hour forecast predictions to a new Delta table.
 
-* **Model Monitoring -- Ongoing**: To ensure the model remains accurate, we'll monitor its performance in production. A scheduled job will compare the model's predictions with the actual carbon intensity values once they become available. This job will calculate key metrics like RMSE and track them over time, allowing us to detect any performance degradation or data drift.
+    * **Key Assumptions**: We use a `scikit-learn` model due to the computational constraints of the Databricks free tier, which requires converting the data to a Pandas DataFrame for prediction. The keys (`ingested_hour_utc`, `datetime`) are explicitly carried with the data to prevent misalignment.
+
+* **Model Monitoring**: To ensure the model remains accurate, we'll monitor its performance in production. A scheduled job will compare the model's predictions with the actual carbon intensity values once they become available. This job will calculate key metrics like RMSE and track them over time, allowing us to detect any performance degradation or data drift.
 
 ### Technologies Used
 
@@ -130,5 +135,7 @@ This section outlines the final stages of the MLOps pipeline, where the raw data
 * **Databricks Secrets**: For secure management of API credentials.
 
 * **MLflow**: For end-to-end management of the model lifecycle, from experiment tracking to model registry.
+
+* **scikit-learn**: A popular Python library for model training and evaluation.
 
 * **Gemini 2.5 Flash**: For efficient code creation of mundane tasks :)
