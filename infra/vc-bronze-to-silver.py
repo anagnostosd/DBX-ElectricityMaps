@@ -9,7 +9,7 @@ from pyspark.sql.types import StructType, StructField, StringType, DoubleType, T
 try:
     lookback_hours = int(dbutils.widgets.get("lookback_hours"))
 except:
-    lookback_hours = 48
+    lookback_hours = 12
     print(f"No lookback_hours parameter provided, defaulting to {lookback_hours} hours.")
 
 # Get the timezone from a notebook widget. Default to EET.

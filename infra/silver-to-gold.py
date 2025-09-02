@@ -9,7 +9,7 @@ import warnings
 try:
     lookback_hours = int(dbutils.widgets.get("lookback_hours"))
 except:
-    lookback_hours = 48
+    lookback_hours = 12
     print(f"No lookback_hours parameter provided, defaulting to {lookback_hours} hours.")
 try:
     tolerance_minutes = int(dbutils.widgets.get("tolerance_minutes"))
@@ -34,15 +34,15 @@ all_ingestion_times = (spark.read.format("delta").table("silver.energy_data")
 
 silver_energy_full_df = spark.read.format("delta").table("silver.energy_data") \
     .filter(col("ingested_at") >= (latest_ingestion_time - datetime.timedelta(hours=lookback_hours))) \
-    .withColumn("ingested_at", hour((round(unix_timestamp("ingested_at")/3600)*3600).cast("timestamp"))) \
+    .withColumn("ingested_at", to_timestamp((round(unix_timestamp("ingested_at")/3600)*3600).cast("timestamp"))) \
     .withColumnRenamed("ingested_at", "ingested_hour_utc") \
-    .cache()
+    #.cache() not supported in free serverless
 
 silver_weather_full_df = spark.read.format("delta").table("silver.weather_forecast_data") \
-    .filter(col("ingested_at") >= (latest_ingestion_time - datetime.timedelta(hours=lookback_hours))) \
-    .withColumn("ingested_at", hour((round(unix_timestamp("ingested_at")/3600)*3600).cast("timestamp"))) \
+    .filter(col("ingested_at") >= (latest_ingestion_time - datetime.timedelta(hours=lookback_hours)- datetime.timedelta(hours=24))) \
+    .withColumn("ingested_at", to_timestamp((round(unix_timestamp("ingested_at")/3600)*3600).cast("timestamp"))) \
     .withColumnRenamed("ingested_at", "ingested_hour_utc") \
-    .cache()
+    #.cache() not supported in free serverless
 
 # --- Main loop for incremental processing ---
 for row in all_ingestion_times:

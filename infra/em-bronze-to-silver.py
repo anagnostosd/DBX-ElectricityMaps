@@ -7,7 +7,7 @@ from delta.tables import DeltaTable
 try:
     lookback_hours = int(dbutils.widgets.get("lookback_hours"))
 except:
-    lookback_hours = 48
+    lookback_hours = 12
     print(f"No lookback_hours parameter provided, defaulting to {lookback_hours} hours.")
 
 # 2. Read the raw data from the bronze layer, focusing on the most recent data
