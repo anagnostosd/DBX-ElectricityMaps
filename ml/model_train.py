@@ -13,7 +13,7 @@ import mlflow.spark
 import os
 import pandas as pd
 from sklearn.ensemble import GradientBoostingRegressor
-from sklearn.metrics import root_mean_squared_error, r2_score
+from sklearn.metrics import mean_squared_error, r2_score
 
 # Set a unique experiment name for MLflow to keep runs organized
 mlflow.set_registry_uri("databricks")
@@ -135,7 +135,7 @@ if all_training_examples:
 
         # Make predictions and evaluate
         predictions = model.predict(X_test)
-        rmse = root_mean_squared_error(y_test, predictions)
+        rmse = mean_squared_error(y_test, predictions, squared=False)
         r2 = r2_score(y_test, predictions)
 
         # Log metrics and model
@@ -149,7 +149,7 @@ if all_training_examples:
         mlflow.sklearn.log_model(
             model,
             "carbon-intensity-model",
-            registered_model_name="arimax_carbon_intensity_forecaster"
+            registered_model_name="carbon_intensity_forecaster"
         )
         
         print(f"\nTraining complete. Model evaluated on test set.")
