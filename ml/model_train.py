@@ -1,5 +1,5 @@
 import datetime
-from pyspark.sql.functions import col, to_timestamp, date_format, unix_timestamp, count, collect_list, struct, when, element_at, flatten, explode, lit
+from pyspark.sql.functions import col, to_timestamp, date_format, unix_timestamp, count, collect_list, struct, when, element_at, flatten, explode, lit, hour, dayofweek, month, dayofyear, weekofyear
 from pyspark.sql.window import Window
 import pyspark.sql.functions as F
 from delta.tables import DeltaTable
@@ -9,7 +9,6 @@ from pyspark.ml import Pipeline
 from pyspark.ml.evaluation import RegressionEvaluator
 import mlflow
 import mlflow.spark
-import os
 
 # Set a unique experiment name for MLflow to keep runs organized
 mlflow.set_registry_uri("databricks")
@@ -31,7 +30,7 @@ ingestion_hours = [row[0] for row in ingestion_hours]
 # Define feature and target columns
 historic_feature_cols = [
     c for c in historic_data_df.columns
-    if c.startswith("lag_") or c.startswith("rolling_avg_") or c in ["hour_of_day", "day_of_week", "month", "day_of_year"]
+    if c.startswith("lag_") or c.startswith("rolling_avg_")
 ]
 
 forecast_feature_cols = [
@@ -47,6 +46,7 @@ for ingestion_hour in ingestion_hours:
     # Get the single row of historic data at the ingestion hour
     historic_snapshot = historic_data_df \
         .filter(col("datetime") == ingestion_hour) \
+        .select(historic_feature_cols) \
         .na.drop()
 
     if historic_snapshot.count() == 1:
@@ -59,6 +59,13 @@ for ingestion_hour in ingestion_hours:
             .na.drop()
 
         if forecast_features_window.count() > 0:
+            # Create time-based features for the forecast window
+            forecast_features_window = forecast_features_window.withColumn("hour_of_day", hour("datetime")) \
+                                                               .withColumn("day_of_week", dayofweek("datetime")) \
+                                                               .withColumn("month", month("datetime")) \
+                                                               .withColumn("day_of_year", dayofyear("datetime")) \
+                                                               .withColumn("week_of_year", weekofyear("datetime"))
+
             # Get the carbon intensity targets from the historic data
             target_datetimes = [row[0] for row in forecast_features_window.select("datetime").collect()]
             targets_df = historic_data_df \
@@ -94,7 +101,10 @@ if all_training_examples:
     test_df = training_data_df.filter(col("ingested_hour_utc") > split_point)
     
     # 6. Define the final feature columns for the GBT model
-    all_features = historic_feature_cols + forecast_feature_cols + ["forecast_offset_h"]
+    historic_features_used = [c for c in historic_feature_cols if c in training_data_df.columns]
+    forecast_features_used = [c for c in forecast_feature_cols if c in training_data_df.columns]
+
+    all_features = historic_features_used + forecast_features_used + ["forecast_offset_h", "hour_of_day", "day_of_week", "month", "day_of_year", "week_of_year"]
     
     # Exclude ingestion_time, datetime, and target_val from features
     feature_cols_for_assembler = [c for c in all_features if c in training_data_df.columns]
