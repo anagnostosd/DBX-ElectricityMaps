@@ -1,4 +1,4 @@
-from pyspark.sql.functions import col, hour, dayofweek, month, lag, avg, window, lit, to_timestamp, to_utc_timestamp, abs, round, unix_timestamp, datediff, date_format, to_date, dayofyear, weekofyear
+from pyspark.sql.functions import col, hour, dayofweek, month, lag, avg, window, lit, to_timestamp, to_utc_timestamp, abs, round, unix_timestamp, datediff, date_format, to_date, dayofyear, weekofyear, floor
 from pyspark.sql.window import Window
 from delta.tables import DeltaTable
 import pyspark.sql.functions as F
@@ -135,7 +135,7 @@ for row in all_ingestion_times:
             forecast_select_cols.append(col(f"`{location}_{wc}`").alias(f"{wc}_{sanitized_location}"))
 
     forecast_gold_df = forecast_pivot_df.select(forecast_select_cols)
-    forecast_gold_df = forecast_gold_df.withColumn("forecast_offset_h", (unix_timestamp(col("datetime")) - unix_timestamp(col("ingested_hour_utc"))) / 3600).cast("int")
+    forecast_gold_df = forecast_gold_df.withColumn("forecast_offset_h", floor((unix_timestamp(col("datetime")) - unix_timestamp(col("ingested_hour_utc"))) / 3600))
     
     forecast_table_name = "gold.weather_forecasts"
     if not spark.catalog.tableExists(forecast_table_name):
