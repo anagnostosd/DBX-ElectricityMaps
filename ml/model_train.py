@@ -12,6 +12,7 @@ import mlflow.spark
 import os
 
 # Set a unique experiment name for MLflow to keep runs organized
+mlflow.set_registry_uri("databricks")
 mlflow.set_experiment("/CarbonML")
 
 # 1. Read the gold layer tables
@@ -55,12 +56,13 @@ for ingestion_hour in ingestion_hours:
         # Get the next 24 hours of weather forecasts for the prediction period
         forecast_features_window = forecasts_df \
             .filter(col("ingested_hour_utc") == ingestion_hour) \
-            .filter(col("forecast_offset_h") <= 23) \
+            .filter(col("forecast_offset_h") <= 24) \
             .orderBy("datetime")
 
         # Get the historic features from the last 24 hours
         historic_features_window = historic_data_window \
-            .filter(col("datetime") < ingestion_hour)
+            .filter(col("datetime") <= ingestion_hour) \
+            .withColumnRenamed("datetime", "historic_datetime")
         
         # Get the carbon intensity targets from the next 24 hours
         targets_window = historic_data_window \
@@ -69,10 +71,10 @@ for ingestion_hour in ingestion_hours:
 
         if historic_features_window.count() == 24 and forecast_features_window.count() == 24 and targets_window.count() == 24:
             # Join the two feature sets
-            combined_features = historic_features_window.join(
-                forecast_features_window,
-                (historic_features_window.datetime == forecast_features_window.datetime),
-                "left_outer"
+            combined_features = forecast_features_window.join(
+                historic_features_window,
+                (historic_features_window.historic_datetime == forecast_features_window.datetime - F.expr("INTERVAL 24 HOURS")),
+                "inner"
             )
 
             # Join with targets
@@ -82,10 +84,10 @@ for ingestion_hour in ingestion_hours:
 
             # Add ingestion time for training
             training_example = training_example \
-                .withColumn("ingestion_time", lit(ingestion_hour)) \
-                .select([col("ingestion_time"), col("forecast_offset_h")] + historic_feature_cols + forecast_feature_cols + [col("target_val")])
+                .select([col("ingested_hour_utc"), col("forecast_offset_h")] + historic_feature_cols + forecast_feature_cols + [col("target_val")])
 
             all_training_examples.append(training_example)
+
 
 # 4. Union all individual training examples into a single DataFrame
 if all_training_examples:
