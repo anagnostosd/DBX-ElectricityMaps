@@ -1,5 +1,5 @@
 import datetime
-from pyspark.sql.functions import col, to_timestamp, date_format, unix_timestamp, count, collect_list, struct, when, element_at, flatten, explode
+from pyspark.sql.functions import col, to_timestamp, date_format, unix_timestamp, count, collect_list, struct, when, element_at, flatten, explode, lit
 from pyspark.sql.window import Window
 import pyspark.sql.functions as F
 from delta.tables import DeltaTable
@@ -35,78 +35,72 @@ historic_feature_cols = [
 ]
 
 forecast_feature_cols = [
-    "temp_athens", "humidity_athens", "precip_athens", "windspeed_athens", "solarenergy_athens", "winddir_athens", "cloudcover_athens",
-    "temp_heraklion", "humidity_heraklion", "precip_heraklion", "windspeed_heraklion", "solarenergy_heraklion", "winddir_heraklion", "cloudcover_heraklion",
-    "temp_thessaloniki", "humidity_thessaloniki", "precip_thessaloniki", "windspeed_thessaloniki", "solarenergy_thessaloniki", "winddir_thessaloniki", "cloudcover_thessaloniki",
-    "hour_of_day", "day_of_week", "month", "day_of_year"
+    c for c in forecasts_df.columns
+    if c.startswith(("temp_", "humidity_", "precip_", "windspeed_", "solarenergy_", "winddir_", "cloudcover_"))
 ]
+
 target_column = "carbon_intensity"
 
 # 3. Create a single, flattened training dataframe for all ingestion times
 all_training_examples = []
 for ingestion_hour in ingestion_hours:
-    # Get the last 24 hours of historic data for features and targets
-    historic_data_window = historic_data_df \
-        .filter(col("datetime") > (ingestion_hour - F.expr("INTERVAL 24 HOURS"))) \
-        .filter(col("datetime") <= (ingestion_hour + F.expr("INTERVAL 24 HOURS"))) \
-        .orderBy("datetime") \
+    # Get the single row of historic data at the ingestion hour
+    historic_snapshot = historic_data_df \
+        .filter(col("datetime") == ingestion_hour) \
         .na.drop()
-    
-    if historic_data_window.count() == 48:
+
+    if historic_snapshot.count() == 1:
         # Get the next 24 hours of weather forecasts for the prediction period
         forecast_features_window = forecasts_df \
             .filter(col("ingested_hour_utc") == ingestion_hour) \
+            .filter(col("forecast_offset_h") > 0) \
             .filter(col("forecast_offset_h") <= 24) \
-            .orderBy("datetime")
+            .orderBy("datetime") \
+            .na.drop()
 
-        # Get the historic features from the last 24 hours
-        historic_features_window = historic_data_window \
-            .filter(col("datetime") <= ingestion_hour) \
-            .withColumnRenamed("datetime", "historic_datetime")
-        
-        # Get the carbon intensity targets from the next 24 hours
-        targets_window = historic_data_window \
-            .filter(col("datetime") > ingestion_hour) \
-            .select(col("datetime"), col(target_column).alias("target_val"))
+        if forecast_features_window.count() > 0:
+            # Get the carbon intensity targets from the historic data
+            target_datetimes = [row[0] for row in forecast_features_window.select("datetime").collect()]
+            targets_df = historic_data_df \
+                .filter(col("datetime").isin(target_datetimes)) \
+                .select(col("datetime"), col(target_column).alias("target_val"))
+            
+            if targets_df.count() == forecast_features_window.count():
+                # Join the historic snapshot with the forecasts
+                training_example = forecast_features_window.crossJoin(historic_snapshot)
+                
+                # Join with targets
+                training_example = training_example.join(
+                    targets_df, 
+                    on="datetime", 
+                    how="inner"
+                )
 
-        if historic_features_window.count() == 24 and forecast_features_window.count() == 24 and targets_window.count() == 24:
-            # Join the two feature sets
-            combined_features = forecast_features_window.join(
-                historic_features_window,
-                (historic_features_window.historic_datetime == forecast_features_window.datetime - F.expr("INTERVAL 24 HOURS")),
-                "inner"
-            )
-
-            # Join with targets
-            training_example = combined_features.join(
-                targets_window, F.col("datetime") == F.col("datetime"), "inner"
-            )
-
-            # Add ingestion time for training
-            training_example = training_example \
-                .select([col("ingested_hour_utc"), col("forecast_offset_h")] + historic_feature_cols + forecast_feature_cols + [col("target_val")])
-
-            all_training_examples.append(training_example)
-
+                # Add ingestion time for training
+                training_example = training_example.withColumn("ingested_hour_utc", lit(ingestion_hour))
+                
+                all_training_examples.append(training_example)
 
 # 4. Union all individual training examples into a single DataFrame
 if all_training_examples:
     training_data_df = all_training_examples[0]
     for df in all_training_examples[1:]:
-        training_data_df = training_data_df.union(df)
+        training_data_df = training_data_df.unionByName(df)
 
     # 5. Perform a chronological train-test split
-    # Get the split point (e.g., 80% of the data)
-    split_point = training_data_df.agg(F.percentile_approx("ingestion_time", 0.8)).collect()[0][0]
+    split_point = training_data_df.agg(F.percentile_approx("ingested_hour_utc", 0.8)).collect()[0][0]
     
-    train_df = training_data_df.filter(col("ingestion_time") <= split_point)
-    test_df = training_data_df.filter(col("ingestion_time") > split_point)
+    train_df = training_data_df.filter(col("ingested_hour_utc") <= split_point)
+    test_df = training_data_df.filter(col("ingested_hour_utc") > split_point)
     
     # 6. Define the final feature columns for the GBT model
-    final_feature_columns = historic_feature_cols + forecast_feature_cols + ["forecast_offset_h"]
+    all_features = historic_feature_cols + forecast_feature_cols + ["forecast_offset_h"]
+    
+    # Exclude ingestion_time, datetime, and target_val from features
+    feature_cols_for_assembler = [c for c in all_features if c in training_data_df.columns]
     
     # Assemble the features into a single vector
-    assembler = VectorAssembler(inputCols=final_feature_columns, outputCol="features")
+    assembler = VectorAssembler(inputCols=feature_cols_for_assembler, outputCol="features")
 
     with mlflow.start_run() as run:
         # Create a pipeline to assemble features and train the model
@@ -141,5 +135,5 @@ if all_training_examples:
         print(f"MLflow Run ID: {run.info.run_id}")
 
 else:
-    print("Not enough data to create full 48-hour windows for training.")
+    print("Not enough data to create training examples.")
     training_data_df = spark.createDataFrame([], "string")
