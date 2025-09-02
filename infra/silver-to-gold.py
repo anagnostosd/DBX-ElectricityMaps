@@ -45,18 +45,20 @@ for row in all_ingestion_times:
     silver_energy_df = spark.read.format("delta").table("silver.energy_data") \
         .filter(col("ingested_at") >= (ingested_hour_utc - F.expr(f"INTERVAL {tolerance_minutes} MINUTES"))) \
         .filter(col("ingested_at") <= (ingested_hour_utc + F.expr(f"INTERVAL {tolerance_minutes} MINUTES"))) \
-        .filter(col("datetime") <= ingested_hour_utc)
+        .filter(col("datetime") <= ingested_hour_utc) \
+        .withColumnRenamed("ingested_at", "ingested_hour_utc")
 
     silver_weather_df = spark.read.format("delta").table("silver.weather_forecast_data") \
         .filter(col("ingested_at") >= (ingested_hour_utc - F.expr(f"INTERVAL {tolerance_minutes} MINUTES"))) \
-        .filter(col("ingested_at") <= (ingested_hour_utc + F.expr(f"INTERVAL {tolerance_minutes} MINUTES")))
+        .filter(col("ingested_at") <= (ingested_hour_utc + F.expr(f"INTERVAL {tolerance_minutes} MINUTES"))) \
+        .withColumnRenamed("ingested_at", "ingested_hour_utc")
 
     # 3. Split weather data into historic observations and future forecasts
     weather_historic_df = silver_weather_df.filter(col("datetime") <= ingested_hour_utc)
     weather_forecast_df = silver_weather_df.filter(col("datetime") > ingested_hour_utc)
     
     # 4. Pivot the historic weather data from long to wide format
-    weather_cols = ["temp", "humidity", "precip", "windspeed", "solarenergy", "winddir"]
+    weather_cols = ["temp", "humidity", "precip", "windspeed", "solarenergy", "winddir", "cloudcover"]
     locations = ["Athens, Greece", "Heraklion, Greece", "Thessaloniki, Greece"]
 
     pivot_df = weather_historic_df.groupBy("datetime").pivot("name", locations).agg(*[F.first(col).alias(col) for col in weather_cols])
