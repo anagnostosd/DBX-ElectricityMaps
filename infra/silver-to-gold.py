@@ -55,8 +55,7 @@ for row in all_ingestion_times:
         .filter(col("datetime") <= ingested_hour_utc) 
 
     silver_weather_df = silver_weather_full_df \
-        .filter(col("ingested_hour_utc") == (ingested_hour_utc)) \
-        .filter(col("datetime") <= ingested_hour_utc) 
+        .filter(col("ingested_hour_utc") == (ingested_hour_utc)) 
 
     # 3. Split weather data into historic observations and future forecasts
     weather_historic_df = silver_weather_df.filter(col("datetime") <= ingested_hour_utc)
