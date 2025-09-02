@@ -21,12 +21,8 @@ except:
 try:
     latest_ingestion_time = spark.read.format("delta").table("silver.energy_data") \
         .agg(F.max(F.date_trunc("hour", col("ingested_at")))).collect()[0][0]
-    if latest_ingestion_time is None:
-        # Fallback for the very first run
-        latest_ingestion_time = datetime.datetime.utcnow()
 except Exception as e:
-    print(f"Could not get latest ingestion time from silver table. Defaulting to now(). Error: {e}")
-    latest_ingestion_time = datetime.datetime.utcnow()
+    print(f"Could not get latest ingestion time from silver table. Error: {e}")
 
 # 2. Get all unique ingestion times within the lookback window
 all_ingestion_times = (spark.read.format("delta").table("silver.energy_data")
@@ -36,22 +32,31 @@ all_ingestion_times = (spark.read.format("delta").table("silver.energy_data")
                        .filter(col("ingested_hour_utc") >= (latest_ingestion_time - datetime.timedelta(hours=lookback_hours)))
                        .collect())
 
+silver_energy_full_df = spark.read.format("delta").table("silver.energy_data") \
+    .filter(col("ingested_at") >= (latest_ingestion_time - datetime.timedelta(hours=lookback_hours))) \
+    .withColumn("ingested_at", hour((round(unix_timestamp("ingested_at")/3600)*3600).cast("timestamp"))) \
+    .withColumnRenamed("ingested_at", "ingested_hour_utc") \
+    .cache()
+
+silver_weather_full_df = spark.read.format("delta").table("silver.weather_forecast_data") \
+    .filter(col("ingested_at") >= (latest_ingestion_time - datetime.timedelta(hours=lookback_hours))) \
+    .withColumn("ingested_at", hour((round(unix_timestamp("ingested_at")/3600)*3600).cast("timestamp"))) \
+    .withColumnRenamed("ingested_at", "ingested_hour_utc") \
+    .cache()
+
 # --- Main loop for incremental processing ---
 for row in all_ingestion_times:
     ingested_hour_utc = row["ingested_hour_utc"]
     print(f"Processing ingestion_hour_utc: {ingested_hour_utc}")
 
     # Read and filter data for the current ingestion time
-    silver_energy_df = spark.read.format("delta").table("silver.energy_data") \
-        .filter(col("ingested_at") >= (ingested_hour_utc - F.expr(f"INTERVAL {tolerance_minutes} MINUTES"))) \
-        .filter(col("ingested_at") <= (ingested_hour_utc + F.expr(f"INTERVAL {tolerance_minutes} MINUTES"))) \
-        .filter(col("datetime") <= ingested_hour_utc) \
-        .withColumnRenamed("ingested_at", "ingested_hour_utc")
+    silver_energy_df = silver_energy_full_df \
+        .filter(col("ingested_hour_utc") == (ingested_hour_utc)) \
+        .filter(col("datetime") <= ingested_hour_utc) 
 
-    silver_weather_df = spark.read.format("delta").table("silver.weather_forecast_data") \
-        .filter(col("ingested_at") >= (ingested_hour_utc - F.expr(f"INTERVAL {tolerance_minutes} MINUTES"))) \
-        .filter(col("ingested_at") <= (ingested_hour_utc + F.expr(f"INTERVAL {tolerance_minutes} MINUTES"))) \
-        .withColumnRenamed("ingested_at", "ingested_hour_utc")
+    silver_weather_df = silver_weather_full_df \
+        .filter(col("ingested_hour_utc") == (ingested_hour_utc)) \
+        .filter(col("datetime") <= ingested_hour_utc) 
 
     # 3. Split weather data into historic observations and future forecasts
     weather_historic_df = silver_weather_df.filter(col("datetime") <= ingested_hour_utc)
@@ -72,7 +77,7 @@ for row in all_ingestion_times:
     pivoted_historic_weather_df = pivot_df.select(select_cols)
     
     # 5. Join the energy and pivoted historic weather dataframes
-    historic_gold_df = silver_energy_df.join(pivoted_historic_weather_df, on=["datetime"], how="left_outer")
+    historic_gold_df = silver_energy_df.join(pivoted_historic_weather_df, on=["datetime"], how="inner")
 
     # Add time-based features
     historic_gold_df = historic_gold_df.withColumn("hour_of_day", hour("datetime")) \
