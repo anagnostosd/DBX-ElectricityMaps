@@ -1,5 +1,6 @@
 import datetime
 from pyspark.sql.functions import col, to_timestamp, date_format, unix_timestamp, count, collect_list, struct, when, element_at, flatten, explode, lit, hour, dayofweek, month, dayofyear, weekofyear
+from pyspark.sql.types import DoubleType, IntegerType, StringType
 from pyspark.sql.window import Window
 import pyspark.sql.functions as F
 from delta.tables import DeltaTable
@@ -9,6 +10,10 @@ from pyspark.ml import Pipeline
 from pyspark.ml.evaluation import RegressionEvaluator
 import mlflow
 import mlflow.spark
+import os
+import pandas as pd
+from sklearn.ensemble import GradientBoostingRegressor
+from sklearn.metrics import root_mean_squared_error, r2_score
 
 # Set a unique experiment name for MLflow to keep runs organized
 mlflow.set_registry_uri("databricks")
@@ -100,44 +105,52 @@ if all_training_examples:
     train_df = training_data_df.filter(col("ingested_hour_utc") <= split_point)
     test_df = training_data_df.filter(col("ingested_hour_utc") > split_point)
     
-    # 6. Define the final feature columns for the GBT model
+    # 6. Define the final feature and target columns for the Scikit-learn model
     historic_features_used = [c for c in historic_feature_cols if c in training_data_df.columns]
     forecast_features_used = [c for c in forecast_feature_cols if c in training_data_df.columns]
-
+    
     all_features = historic_features_used + forecast_features_used + ["forecast_offset_h", "hour_of_day", "day_of_week", "month", "day_of_year", "week_of_year"]
     
-    # Exclude ingestion_time, datetime, and target_val from features
-    feature_cols_for_assembler = [c for c in all_features if c in training_data_df.columns]
+    # Filter for only numeric columns to avoid the VectorAssembler error
+    numeric_columns = [
+        c for c in all_features
+        if c in training_data_df.columns and training_data_df.schema[c].dataType.typeName() in ["double", "long", "integer"]
+    ]
+
+    # Convert Spark DataFrames to Pandas for Scikit-learn
+    train_pd_df = train_df.toPandas()
+    test_pd_df = test_df.toPandas()
     
-    # Assemble the features into a single vector
-    assembler = VectorAssembler(inputCols=feature_cols_for_assembler, outputCol="features")
+    X_train = train_pd_df[numeric_columns]
+    y_train = train_pd_df["target_val"]
+    
+    X_test = test_pd_df[numeric_columns]
+    y_test = test_pd_df["target_val"]
 
     with mlflow.start_run() as run:
-        # Create a pipeline to assemble features and train the model
-        pipeline = Pipeline(stages=[assembler, GBTRegressor(featuresCol="features", labelCol="target_val", maxIter=10)])
-        
-        # Train the single model
-        print(f"Training a single model on {train_df.count()} rows...")
-        model = pipeline.fit(train_df)
-        
-        # Make predictions on the test set
-        predictions = model.transform(test_df)
-        
-        # Evaluate the model
-        evaluator_rmse = RegressionEvaluator(labelCol="target_val", predictionCol="prediction", metricName="rmse")
-        rmse = evaluator_rmse.evaluate(predictions)
-        
-        evaluator_r2 = RegressionEvaluator(labelCol="target_val", predictionCol="prediction", metricName="r2")
-        r2 = evaluator_r2.evaluate(predictions)
-        
+        # Create and train the Scikit-learn model
+        model = GradientBoostingRegressor(n_estimators=100, learning_rate=0.1, max_depth=3, random_state=42)
+        print(f"Training a Scikit-learn GradientBoostingRegressor model on {len(X_train)} rows...")
+        model.fit(X_train, y_train)
+
+        # Make predictions and evaluate
+        predictions = model.predict(X_test)
+        rmse = root_mean_squared_error(y_test, predictions)
+        r2 = r2_score(y_test, predictions)
+
         # Log metrics and model
-        mlflow.log_param("model_type", "GBTRegressor_unified")
-        mlflow.log_param("train_size", train_df.count())
-        mlflow.log_param("test_size", test_df.count())
+        mlflow.log_param("model_type", "scikit-learn_GradientBoostingRegressor")
+        mlflow.log_param("train_size", len(X_train))
+        mlflow.log_param("test_size", len(X_test))
         mlflow.log_metric("rmse", rmse)
         mlflow.log_metric("r2", r2)
-        
-        mlflow.spark.log_model(model, "carbon-intensity-model")
+
+        # Log the Scikit-learn model artifact
+        mlflow.sklearn.log_model(
+            model,
+            "carbon-intensity-model",
+            registered_model_name="arimax_carbon_intensity_forecaster"
+        )
         
         print(f"\nTraining complete. Model evaluated on test set.")
         print(f"Test RMSE: {rmse}")
