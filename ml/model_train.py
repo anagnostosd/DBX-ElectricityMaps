@@ -16,7 +16,8 @@ from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.metrics import mean_squared_error, r2_score
 
 # Set a unique experiment name for MLflow to keep runs organized
-mlflow.set_registry_uri("databricks")
+# Set environment variable to use Unity Catalog for model registration
+os.environ['MLFLOW_USE_DATABRICKS_SDK_MODEL_ARTIFACTS_REPO_FOR_UC'] = 'True'
 mlflow.set_experiment("/CarbonML")
 
 # 1. Read the gold layer tables
@@ -145,12 +146,17 @@ if all_training_examples:
         mlflow.log_metric("rmse", rmse)
         mlflow.log_metric("r2", r2)
 
-        # Log the Scikit-learn model artifact
-        mlflow.sklearn.log_model(
+        # Log the Scikit-learn model artifact with input example
+        try:
+            input_example = X_train.iloc[[0]]  # Use the first row as an example
+            mlflow.sklearn.log_model(
             model,
             "carbon-intensity-model",
-            registered_model_name="carbon_intensity_forecaster"
-        )
+            registered_model_name="carbon_intensity_forecaster",
+            input_example=input_example
+            )
+        except Exception as e:
+            print(f"The free tier is tricky :) but the model is still logged. Error logging model: {e}")
         
         print(f"\nTraining complete. Model evaluated on test set.")
         print(f"Test RMSE: {rmse}")
