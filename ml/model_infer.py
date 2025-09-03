@@ -8,8 +8,10 @@ import mlflow.pyfunc
 from mlflow.tracking import MlflowClient
 
 # --- 1. Load the latest production model from the Delta table ---
-model_table_name = "workspace.gold.carbon_intensity_model"
-model_version = "1"
+model_table_name = "workspace.default.carbon_intensity_forecaster"
+client=MlflowClient()
+model_version = str(len(client.search_model_versions("name='workspace.default.carbon_intensity_forecaster'")))
+
 
 try:
     # Read the model from the Delta table
