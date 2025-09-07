@@ -21,92 +21,31 @@ os.environ['MLFLOW_USE_DATABRICKS_SDK_MODEL_ARTIFACTS_REPO_FOR_UC'] = 'True'
 mlflow.set_experiment("/CarbonML")
 
 # 1. Read the gold layer tables
-historic_data_df = spark.read.format("delta").table("gold.historic_data")
-forecasts_df = spark.read.format("delta").table("gold.weather_forecasts")
+training_data_df = spark.read.format("delta").table("gold.training_data")
 
-# 2. Get all unique ingestion times to use as keys for our training windows
-ingestion_hours = (
-    forecasts_df.select("ingested_hour_utc")
-    .distinct()
-    .sort("ingested_hour_utc")
-    .collect()
-)
-ingestion_hours = [row[0] for row in ingestion_hours]
-
-# Define feature and target columns
+# 2. Define feature and target columns
 historic_feature_cols = [
-    c for c in historic_data_df.columns
+    c for c in training_data_df.columns
     if c.startswith("lag_") or c.startswith("rolling_avg_")
 ]
 
 forecast_feature_cols = [
-    c for c in forecasts_df.columns
+    c for c in training_data_df.columns
     if c.startswith(("temp_", "humidity_", "precip_", "windspeed_", "solarenergy_", "winddir_", "cloudcover_"))
 ]
 
 target_column = "carbon_intensity"
 
-# 3. Create a single, flattened training dataframe for all ingestion times
-all_training_examples = []
-for ingestion_hour in ingestion_hours:
-    # Get the single row of historic data at the ingestion hour
-    historic_snapshot = historic_data_df \
-        .filter(col("datetime") == ingestion_hour) \
-        .select(historic_feature_cols) \
-        .na.drop()
+# 3. Start training if we have data
+if training_data_df:
 
-    if historic_snapshot.count() == 1:
-        # Get the next 24 hours of weather forecasts for the prediction period
-        forecast_features_window = forecasts_df \
-            .filter(col("ingested_hour_utc") == ingestion_hour) \
-            .filter(col("forecast_offset_h") > 0) \
-            .filter(col("forecast_offset_h") <= 24) \
-            .orderBy("datetime") \
-            .na.drop()
-
-        if forecast_features_window.count() > 0:
-            # Create time-based features for the forecast window
-            forecast_features_window = forecast_features_window.withColumn("hour_of_day", hour("datetime")) \
-                                                               .withColumn("day_of_week", dayofweek("datetime")) \
-                                                               .withColumn("month", month("datetime")) \
-                                                               .withColumn("day_of_year", dayofyear("datetime")) \
-                                                               .withColumn("week_of_year", weekofyear("datetime"))
-
-            # Get the carbon intensity targets from the historic data
-            target_datetimes = [row[0] for row in forecast_features_window.select("datetime").collect()]
-            targets_df = historic_data_df \
-                .filter(col("datetime").isin(target_datetimes)) \
-                .select(col("datetime"), col(target_column).alias("target_val"))
-            
-            if targets_df.count() == forecast_features_window.count():
-                # Join the historic snapshot with the forecasts
-                training_example = forecast_features_window.crossJoin(historic_snapshot)
-                
-                # Join with targets
-                training_example = training_example.join(
-                    targets_df, 
-                    on="datetime", 
-                    how="inner"
-                )
-
-                # Add ingestion time for training
-                training_example = training_example.withColumn("ingested_hour_utc", lit(ingestion_hour))
-                
-                all_training_examples.append(training_example)
-
-# 4. Union all individual training examples into a single DataFrame
-if all_training_examples:
-    training_data_df = all_training_examples[0]
-    for df in all_training_examples[1:]:
-        training_data_df = training_data_df.unionByName(df)
-
-    # 5. Perform a chronological train-test split
+    # 4. Perform a chronological train-test split
     split_point = training_data_df.agg(F.percentile_approx("ingested_hour_utc", 0.8)).collect()[0][0]
     
     train_df = training_data_df.filter(col("ingested_hour_utc") <= split_point)
     test_df = training_data_df.filter(col("ingested_hour_utc") > split_point)
     
-    # 6. Define the final feature and target columns for the Scikit-learn model
+    # 5. Define the final feature and target columns for the Scikit-learn model
     historic_features_used = [c for c in historic_feature_cols if c in training_data_df.columns]
     forecast_features_used = [c for c in forecast_feature_cols if c in training_data_df.columns]
     
