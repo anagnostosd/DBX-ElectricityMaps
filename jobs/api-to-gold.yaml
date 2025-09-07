@@ -36,6 +36,12 @@ resources:
           spark_python_task:
             python_file: /Workspace/Users/anagnostos.d@gmail.com/DBX-ElectricityMaps/infra/silver-to-gold.py
           environment_key: Default
+        - task_key: gold-training-data
+          depends_on:
+            - task_key: silver-to-gold
+          spark_python_task:
+            python_file: /Workspace/Users/anagnostos.d@gmail.com/DBX-ElectricityMaps/infra/gold-features.py
+          environment_key: Default
         - task_key: run_inference
           depends_on:
             - task_key: silver-to-gold
